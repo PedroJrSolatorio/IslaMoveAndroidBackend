@@ -46,6 +46,10 @@ async function verifyToken(req, res, next) {
   }
 }
 
+app.get('/', (req, res) => {
+  res.send('🚀 Server is running! Try /health or your /api routes.');
+});
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
