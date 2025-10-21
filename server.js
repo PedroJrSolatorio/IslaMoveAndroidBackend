@@ -51,6 +51,67 @@ app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date().toISOString() });
 });
 
+// Update user password endpoint
+app.put('/api/users/:userId/password', verifyToken, async (req, res) => {
+  const { userId } = req.params;
+  const { newPassword, adminId } = req.body;
+  
+  try {
+    // Validate input
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Prevent changing own password through this endpoint
+    if (userId === req.user.uid) {
+      return res.status(400).json({ error: 'Cannot change your own password through admin panel' });
+    }
+
+    // Verify adminId matches the authenticated user
+    if (adminId !== req.user.uid) {
+      return res.status(403).json({ error: 'Admin ID mismatch' });
+    }
+
+    // Check if user exists in Firestore
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found in database' });
+    }
+
+    // Prevent changing other admin passwords
+    if (userDoc.data().userType === 'ADMIN') {
+      return res.status(403).json({ error: 'Cannot change admin user passwords' });
+    }
+
+    // Update password in Firebase Authentication
+    await auth.updateUser(userId, {
+      password: newPassword
+    });
+
+    console.log(`Updated password for user ${userId} by admin ${adminId}`);
+
+    // Update Firestore (for compatibility - storing plain text passwords is not recommended in production)
+    await db.collection('users').doc(userId).update({
+      plainTextPassword: newPassword,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      passwordUpdatedBy: adminId
+    });
+
+    res.json({ 
+      success: true, 
+      message: 'Password updated successfully',
+      userId: userId
+    });
+
+  } catch (error) {
+    console.error('Error updating password:', error);
+    res.status(500).json({ 
+      error: 'Failed to update password',
+      details: error.message 
+    });
+  }
+});
+
 // Delete user endpoint
 app.delete('/api/users/:userId', verifyToken, async (req, res) => {
   const { userId } = req.params;
