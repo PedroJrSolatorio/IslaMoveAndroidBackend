@@ -11,7 +11,8 @@ app.use(express.json());
 
 // Initialize Firebase Admin SDK
 // You'll need to download your service account key from Firebase Console
-const serviceAccount = require('./serviceAccountKey.json');
+// const serviceAccount = require('./serviceAccountKey.json'); //Running locally
+const serviceAccount = JSON.parse(process.env.SERVICE_ACCOUNT_KEY); //Running on Render
 
 admin.initializeApp({
   credential: admin.credential.cert(serviceAccount)
