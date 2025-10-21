@@ -1,0 +1,15 @@
+# Firebase Admin SDK
+serviceAccountKey.json
+
+# Node modules
+node_modules/
+
+# Environment variables
+.env
+
+# Logs
+*.log
+
+# Build files (optional)
+dist/
+build/
