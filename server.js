@@ -360,10 +360,9 @@ app.post('/api/ratings/:ratingId/update-stats', async (req, res) => {
         console.log(`✓ DRIVER rating updated: ${newStats.overallRating}`);
       } else if (userData.userType === 'PASSENGER') {
         console.log('Updating PASSENGER rating...');
-        // FIX: Use newStats instead of snapshot
         await db.collection('users').doc(toUserId).update({
-          passengerRating: parseFloat(newStats.overallRating.toFixed(1)),
-          passengerTotalTrips: newStats.totalRatings,
+          rating: parseFloat(newStats.overallRating.toFixed(1)),
+          totalRatings: newStats.totalRatings,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
         console.log(`✓ PASSENGER rating updated: ${newStats.overallRating}`);
