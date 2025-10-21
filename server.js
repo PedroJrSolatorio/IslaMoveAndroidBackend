@@ -243,6 +243,106 @@ app.get('/api/users', verifyToken, async (req, res) => {
   }
 });
 
+// Update user rating after new rating submission
+app.post('/api/ratings/:ratingId/update-stats', verifyToken, async (req, res) => {
+  const { ratingId } = req.params;
+  const { toUserId, stars } = req.body;
+  
+  try {
+    // Validate input
+    if (!toUserId || !stars || stars < 1 || stars > 5) {
+      return res.status(400).json({ error: 'Invalid rating data' });
+    }
+
+    // Get or create user rating stats
+    const statsRef = db.collection('user_rating_stats').doc(toUserId);
+    const statsDoc = await statsRef.get();
+    
+    let newStats;
+    if (statsDoc.exists) {
+      const currentStats = statsDoc.data();
+      const totalRatings = currentStats.totalRatings + 1;
+      const newAverage = ((currentStats.overallRating * currentStats.totalRatings) + stars) / totalRatings;
+      
+      // Update rating breakdown
+      const breakdown = currentStats.ratingBreakdown || {
+        fiveStars: 0,
+        fourStars: 0,
+        threeStars: 0,
+        twoStars: 0,
+        oneStar: 0
+      };
+      
+      if (stars === 5) breakdown.fiveStars++;
+      else if (stars === 4) breakdown.fourStars++;
+      else if (stars === 3) breakdown.threeStars++;
+      else if (stars === 2) breakdown.twoStars++;
+      else if (stars === 1) breakdown.oneStar++;
+      
+      newStats = {
+        overallRating: newAverage,
+        totalRatings: totalRatings,
+        ratingBreakdown: breakdown,
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+      };
+    } else {
+      // First rating for this user
+      const breakdown = {
+        fiveStars: stars === 5 ? 1 : 0,
+        fourStars: stars === 4 ? 1 : 0,
+        threeStars: stars === 3 ? 1 : 0,
+        twoStars: stars === 2 ? 1 : 0,
+        oneStar: stars === 1 ? 1 : 0
+      };
+      
+      newStats = {
+        overallRating: stars,
+        totalRatings: 1,
+        ratingBreakdown: breakdown,
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+      };
+    }
+    
+    // Update user_rating_stats collection
+    await statsRef.set(newStats, { merge: true });
+    
+    // Get user document to check user type
+    const userDoc = await db.collection('users').doc(toUserId).get();
+    if (userDoc.exists) {
+      const userData = userDoc.data();
+      
+      // Update the rating in users collection based on user type
+      if (userData.userType === 'DRIVER' && userData.driverData) {
+        await db.collection('users').doc(toUserId).update({
+          'driverData.rating': newStats.overallRating,
+          'driverData.totalRatings': newStats.totalRatings
+        });
+      } else if (userData.userType === 'PASSENGER') {
+        // Passengers don't have driverData, so update at root level or passengerData
+        await db.collection('users').doc(toUserId).update({
+          rating: newStats.overallRating,
+          totalRatings: newStats.totalRatings
+        });
+      }
+    }
+
+    console.log(`Updated rating stats for user ${toUserId}: ${newStats.overallRating} (${newStats.totalRatings} ratings)`);
+
+    res.json({ 
+      success: true, 
+      message: 'Rating stats updated successfully',
+      stats: newStats
+    });
+
+  } catch (error) {
+    console.error('Error updating rating stats:', error);
+    res.status(500).json({ 
+      error: 'Failed to update rating stats',
+      details: error.message 
+    });
+  }
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
