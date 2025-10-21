@@ -352,9 +352,11 @@ app.post('/api/ratings/:ratingId/update-stats', async (req, res) => {
       // Update the rating in users collection based on user type
       if (userData.userType === 'DRIVER') {
         console.log('Updating DRIVER rating...');
+        const driverData = userData.driverData || {};
         await db.collection('users').doc(toUserId).update({
           'driverData.rating': parseFloat(newStats.overallRating.toFixed(1)),
           'driverData.totalRatings': newStats.totalRatings,
+          ...driverData,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
         console.log(`✓ DRIVER rating updated: ${newStats.overallRating}`);
