@@ -362,8 +362,8 @@ app.post('/api/ratings/:ratingId/update-stats', async (req, res) => {
         console.log('Updating PASSENGER rating...');
         // FIX: Use newStats instead of snapshot
         await db.collection('users').doc(toUserId).update({
-          'passengerRating': parseFloat(newStats.overallRating.toFixed(1)),
-          'passengerTotalTrips': newStats.totalRatings,
+          passengerRating: parseFloat(newStats.overallRating.toFixed(1)),
+          passengerTotalTrips: newStats.totalRatings,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
         console.log(`✓ PASSENGER rating updated: ${newStats.overallRating}`);
