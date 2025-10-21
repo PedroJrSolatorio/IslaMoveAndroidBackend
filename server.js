@@ -357,8 +357,8 @@ app.post('/api/ratings/:ratingId/update-stats', async (req, res) => {
       } else if (userData.userType === 'PASSENGER') {
         console.log('Updating PASSENGER rating...');
         await db.collection('users').doc(toUserId).update({
-          rating: parseFloat(newStats.overallRating.toFixed(1)),
-          totalRatings: newStats.totalRatings,
+          passengerRating: parseFloat(newStats.overallRating.toFixed(1)),
+          passengerTotalTrips: newStats.totalRatings,
           updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
         console.log(`✓ PASSENGER rating updated: ${newStats.overallRating}`);
