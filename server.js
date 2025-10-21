@@ -244,22 +244,48 @@ app.get('/api/users', verifyToken, async (req, res) => {
 });
 
 // Update user rating after new rating submission
-app.post('/api/ratings/:ratingId/update-stats', verifyToken, async (req, res) => {
+app.post('/api/ratings/:ratingId/update-stats', async (req, res) => {
   const { ratingId } = req.params;
-  const { toUserId, stars } = req.body;
+  const { toUserId, stars, fromUserId } = req.body;
+  
+  console.log('=== UPDATE RATING STATS REQUEST ===');
+  console.log('Rating ID:', ratingId);
+  console.log('To User ID:', toUserId);
+  console.log('Stars:', stars);
+  console.log('From User ID:', fromUserId);
   
   try {
     // Validate input
     if (!toUserId || !stars || stars < 1 || stars > 5) {
+      console.error('Validation failed:', { toUserId, stars });
       return res.status(400).json({ error: 'Invalid rating data' });
     }
 
+    // Verify the rating exists
+    console.log('Checking if rating exists...');
+    const ratingDoc = await db.collection('ratings').doc(ratingId).get();
+    if (!ratingDoc.exists) {
+      console.error('Rating not found:', ratingId);
+      return res.status(404).json({ error: 'Rating not found' });
+    }
+    
+    const ratingData = ratingDoc.data();
+    console.log('Rating data:', ratingData);
+    
+    // Verify the request is for the correct user
+    if (ratingData.toUserId !== toUserId) {
+      console.error('User mismatch. Expected:', ratingData.toUserId, 'Got:', toUserId);
+      return res.status(403).json({ error: 'User mismatch' });
+    }
+
     // Get or create user rating stats
+    console.log('Fetching user rating stats...');
     const statsRef = db.collection('user_rating_stats').doc(toUserId);
     const statsDoc = await statsRef.get();
     
     let newStats;
     if (statsDoc.exists) {
+      console.log('Existing stats found:', statsDoc.data());
       const currentStats = statsDoc.data();
       const totalRatings = currentStats.totalRatings + 1;
       const newAverage = ((currentStats.overallRating * currentStats.totalRatings) + stars) / totalRatings;
@@ -280,12 +306,13 @@ app.post('/api/ratings/:ratingId/update-stats', verifyToken, async (req, res) =>
       else if (stars === 1) breakdown.oneStar++;
       
       newStats = {
-        overallRating: newAverage,
+        overallRating: parseFloat(newAverage.toFixed(1)),
         totalRatings: totalRatings,
         ratingBreakdown: breakdown,
         lastUpdated: admin.firestore.FieldValue.serverTimestamp()
       };
     } else {
+      console.log('No existing stats, creating new...');
       // First rating for this user
       const breakdown = {
         fiveStars: stars === 5 ? 1 : 0,
@@ -296,37 +323,51 @@ app.post('/api/ratings/:ratingId/update-stats', verifyToken, async (req, res) =>
       };
       
       newStats = {
-        overallRating: stars,
+        userId: toUserId,
+        overallRating: parseFloat(stars.toFixed(1)),
         totalRatings: 1,
         ratingBreakdown: breakdown,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
         lastUpdated: admin.firestore.FieldValue.serverTimestamp()
       };
     }
     
+    console.log('New stats to save:', newStats);
+    
     // Update user_rating_stats collection
     await statsRef.set(newStats, { merge: true });
+    console.log('✓ user_rating_stats updated');
     
     // Get user document to check user type
+    console.log('Fetching user document...');
     const userDoc = await db.collection('users').doc(toUserId).get();
     if (userDoc.exists) {
       const userData = userDoc.data();
+      console.log('User type:', userData.userType);
       
       // Update the rating in users collection based on user type
-      if (userData.userType === 'DRIVER' && userData.driverData) {
+      if (userData.userType === 'DRIVER') {
+        console.log('Updating DRIVER rating...');
         await db.collection('users').doc(toUserId).update({
-          'driverData.rating': newStats.overallRating,
-          'driverData.totalRatings': newStats.totalRatings
+          'driverData.rating': parseFloat(newStats.overallRating.toFixed(1)),
+          'driverData.totalRatings': newStats.totalRatings,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
+        console.log(`✓ DRIVER rating updated: ${newStats.overallRating}`);
       } else if (userData.userType === 'PASSENGER') {
-        // Passengers don't have driverData, so update at root level or passengerData
+        console.log('Updating PASSENGER rating...');
         await db.collection('users').doc(toUserId).update({
-          rating: newStats.overallRating,
-          totalRatings: newStats.totalRatings
+          rating: parseFloat(newStats.overallRating.toFixed(1)),
+          totalRatings: newStats.totalRatings,
+          updatedAt: admin.firestore.FieldValue.serverTimestamp()
         });
+        console.log(`✓ PASSENGER rating updated: ${newStats.overallRating}`);
       }
+    } else {
+      console.error('User document not found:', toUserId);
     }
 
-    console.log(`Updated rating stats for user ${toUserId}: ${newStats.overallRating} (${newStats.totalRatings} ratings)`);
+    console.log('=== RATING STATS UPDATE COMPLETE ===\n');
 
     res.json({ 
       success: true, 
@@ -335,7 +376,9 @@ app.post('/api/ratings/:ratingId/update-stats', verifyToken, async (req, res) =>
     });
 
   } catch (error) {
-    console.error('Error updating rating stats:', error);
+    console.error('=== ERROR UPDATING RATING STATS ===');
+    console.error('Error:', error);
+    console.error('Stack:', error.stack);
     res.status(500).json({ 
       error: 'Failed to update rating stats',
       details: error.message 
