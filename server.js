@@ -96,8 +96,7 @@ app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
       timestamp: timestamp,
       public_id: publicId,
       folder: `islamove/${uploadType}`,
-      resource_type: 'image',
-      type: 'upload',
+      upload_preset: process.env.CLOUDINARY_UPLOAD_PRESET,
       access_mode: 'authenticated',
       invalidate: true,
       transformation: [
@@ -119,7 +118,7 @@ app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
       apiKey: process.env.CLOUDINARY_API_KEY,
       publicId: publicId,
       folder: uploadParams.folder,
-      transformation: 'w_2000,h_2000,c_limit/q_auto:good/f_auto'
+      uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET
     });
 
   } catch (error) {
@@ -150,22 +149,17 @@ app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
     const timestamp = Math.round(Date.now() / 1000);
     const publicId = `islamove/${uploadType}/${userId}_${timestamp}`;
 
-    // Define upload parameters
-    const uploadParams = {
-      timestamp: timestamp,
-      upload_preset: 'unsigned_preset', // You'll create this in Cloudinary
+     const uploadParams = {
+      timestamp,
       public_id: publicId,
       folder: `islamove/${uploadType}`,
-      resource_type: 'image',
-      type: 'upload',
-      // Security settings
-      access_mode: 'authenticated', // Requires signed URLs to access
-      invalidate: true, // Invalidate CDN cache on update
-      // Transformation settings
+      upload_preset: process.env.CLOUDINARY_UPLOAD_PRESET,
+      access_mode: 'authenticated',
+      invalidate: true,
       transformation: [
-        { width: 2000, height: 2000, crop: 'limit' }, // Max dimensions
-        { quality: 'auto:good' }, // Optimize quality
-        { fetch_format: 'auto' } // Auto format (WebP when supported)
+        { width: 2000, height: 2000, crop: 'limit' },
+        { quality: 'auto:good' },
+        { fetch_format: 'auto' }
       ]
     };
 
@@ -175,15 +169,14 @@ app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
       process.env.CLOUDINARY_API_SECRET
     );
 
-    // Return signed parameters to client
-    res.json({
-      signature: signature,
-      timestamp: timestamp,
+     res.json({
+      signature,
+      timestamp,
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
-      publicId: publicId,
+      publicId,
       folder: uploadParams.folder,
-      uploadPreset: uploadParams.upload_preset
+      uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET
     });
 
   } catch (error) {
