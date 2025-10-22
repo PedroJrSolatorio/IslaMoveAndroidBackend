@@ -67,6 +67,15 @@ async function verifyAdmin(req, res, next) {
   }
 }
 
+app.get('/api/cloudinary/test', (req, res) => {
+  res.json({ 
+    status: 'Cloudinary endpoints available',
+    cloudinaryConfigured: !!(process.env.CLOUDINARY_CLOUD_NAME && 
+                             process.env.CLOUDINARY_API_KEY && 
+                             process.env.CLOUDINARY_API_SECRET)
+  });
+});
+
 // ==================== CLOUDINARY SECURE UPLOAD ENDPOINTS ====================
 
 /**
