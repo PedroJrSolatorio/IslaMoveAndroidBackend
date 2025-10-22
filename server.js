@@ -9,6 +9,13 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET
+});
+
 // Initialize Firebase Admin SDK
 // You'll need to download your service account key from Firebase Console
 // const serviceAccount = require('./serviceAccountKey.json'); //Running locally
@@ -45,6 +52,241 @@ async function verifyToken(req, res, next) {
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
+
+// Middleware to verify admin access
+async function verifyAdmin(req, res, next) {
+  try {
+    const userDoc = await db.collection('users').doc(req.user.uid).get();
+    if (!userDoc.exists || userDoc.data().userType !== 'ADMIN') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    next();
+  } catch (error) {
+    console.error('Admin verification error:', error);
+    return res.status(500).json({ error: 'Failed to verify admin access' });
+  }
+}
+
+// ==================== CLOUDINARY SECURE UPLOAD ENDPOINTS ====================
+
+/**
+ * Generate signed upload parameters for ID documents
+ * Only authenticated users can request upload signatures
+ */
+app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
+  try {
+    const { uploadType } = req.body; // 'id_document', 'profile_photo', etc.
+    const userId = req.user.uid;
+
+    // Validate upload type
+    const validUploadTypes = ['id_document', 'profile_photo', 'vehicle_photo'];
+    if (!uploadType || !validUploadTypes.includes(uploadType)) {
+      return res.status(400).json({ error: 'Invalid upload type' });
+    }
+
+    // Generate unique public_id for the upload
+    const timestamp = Math.round(Date.now() / 1000);
+    const publicId = `islamove/${uploadType}/${userId}_${timestamp}`;
+
+    // Define upload parameters
+    const uploadParams = {
+      timestamp: timestamp,
+      upload_preset: 'unsigned_preset', // You'll create this in Cloudinary
+      public_id: publicId,
+      folder: `islamove/${uploadType}`,
+      resource_type: 'image',
+      type: 'upload',
+      // Security settings
+      access_mode: 'authenticated', // Requires signed URLs to access
+      invalidate: true, // Invalidate CDN cache on update
+      // Transformation settings
+      transformation: [
+        { width: 2000, height: 2000, crop: 'limit' }, // Max dimensions
+        { quality: 'auto:good' }, // Optimize quality
+        { fetch_format: 'auto' } // Auto format (WebP when supported)
+      ]
+    };
+
+    // Generate signature
+    const signature = cloudinary.utils.api_sign_request(
+      uploadParams,
+      process.env.CLOUDINARY_API_SECRET
+    );
+
+    // Return signed parameters to client
+    res.json({
+      signature: signature,
+      timestamp: timestamp,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      publicId: publicId,
+      folder: uploadParams.folder,
+      uploadPreset: uploadParams.upload_preset
+    });
+
+  } catch (error) {
+    console.error('Error generating upload signature:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate upload signature',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Verify and save uploaded image URL to database
+ * This ensures the upload actually succeeded before saving to Firestore
+ */
+app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
+  try {
+    const { publicId, uploadType, secureUrl } = req.body;
+    const userId = req.user.uid;
+
+    // Verify the upload exists in Cloudinary
+    try {
+      const result = await cloudinary.api.resource(publicId, {
+        resource_type: 'image',
+        type: 'upload'
+      });
+
+      // Verify the public_id contains the user's ID (security check)
+      if (!publicId.includes(userId)) {
+        return res.status(403).json({ error: 'Unauthorized access to resource' });
+      }
+
+      // Save the secure URL to Firestore based on upload type
+      const updateData = {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      if (uploadType === 'id_document') {
+        updateData.idDocumentUrl = result.secure_url;
+        updateData.idDocumentPublicId = publicId;
+      } else if (uploadType === 'profile_photo') {
+        updateData.photoURL = result.secure_url;
+        updateData.profilePhotoPublicId = publicId;
+      } else if (uploadType === 'vehicle_photo') {
+        updateData['driverData.vehiclePhotoUrl'] = result.secure_url;
+        updateData['driverData.vehiclePhotoPublicId'] = publicId;
+      }
+
+      await db.collection('users').doc(userId).update(updateData);
+
+      res.json({
+        success: true,
+        message: 'Upload verified and saved',
+        secureUrl: result.secure_url,
+        publicId: publicId
+      });
+
+    } catch (cloudinaryError) {
+      console.error('Cloudinary verification error:', cloudinaryError);
+      return res.status(404).json({ error: 'Upload not found in Cloudinary' });
+    }
+
+  } catch (error) {
+    console.error('Error verifying upload:', error);
+    res.status(500).json({ 
+      error: 'Failed to verify upload',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Generate signed URL for viewing private images
+ * This allows temporary access to authenticated images
+ */
+app.post('/api/cloudinary/get-signed-url', verifyToken, async (req, res) => {
+  try {
+    const { publicId } = req.body;
+    const userId = req.user.uid;
+
+    // Get user document to check permissions
+    const userDoc = await db.collection('users').doc(userId).get();
+    if (!userDoc.exists) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const userData = userDoc.data();
+    const isAdmin = userData.userType === 'ADMIN';
+
+    // Check if user has permission to view this image
+    // Users can view their own images, admins can view all
+    if (!isAdmin && !publicId.includes(userId)) {
+      return res.status(403).json({ error: 'Unauthorized access to resource' });
+    }
+
+    // Generate signed URL (valid for 1 hour)
+    const signedUrl = cloudinary.utils.private_download_url(
+      publicId,
+      'jpg',
+      {
+        resource_type: 'image',
+        type: 'authenticated',
+        expires_at: Math.round(Date.now() / 1000) + 3600 // 1 hour
+      }
+    );
+
+    res.json({
+      signedUrl: signedUrl,
+      expiresIn: 3600 // seconds
+    });
+
+  } catch (error) {
+    console.error('Error generating signed URL:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate signed URL',
+      details: error.message 
+    });
+  }
+});
+
+/**
+ * Delete image from Cloudinary
+ * Only the owner or admin can delete
+ */
+app.delete('/api/cloudinary/delete/:publicId', verifyToken, async (req, res) => {
+  try {
+    const publicId = decodeURIComponent(req.params.publicId);
+    const userId = req.user.uid;
+
+    // Get user document to check if admin
+    const userDoc = await db.collection('users').doc(userId).get();
+    const isAdmin = userDoc.exists && userDoc.data().userType === 'ADMIN';
+
+    // Check permission
+    if (!isAdmin && !publicId.includes(userId)) {
+      return res.status(403).json({ error: 'Unauthorized to delete this resource' });
+    }
+
+    // Delete from Cloudinary
+    const result = await cloudinary.uploader.destroy(publicId, {
+      resource_type: 'image',
+      type: 'upload',
+      invalidate: true
+    });
+
+    if (result.result === 'ok' || result.result === 'not found') {
+      res.json({
+        success: true,
+        message: 'Image deleted successfully',
+        result: result.result
+      });
+    } else {
+      throw new Error('Failed to delete image');
+    }
+
+  } catch (error) {
+    console.error('Error deleting image:', error);
+    res.status(500).json({ 
+      error: 'Failed to delete image',
+      details: error.message 
+    });
+  }
+});
+
+// ==================== OTHER ENDPOINTS ====================
 
 app.get('/', (req, res) => {
   res.send('🚀 Server is running! Try /health or your /api routes.');
@@ -117,7 +359,7 @@ app.put('/api/users/:userId/password', verifyToken, async (req, res) => {
 });
 
 // Delete user endpoint
-app.delete('/api/users/:userId', verifyToken, async (req, res) => {
+app.delete('/api/users/:userId', verifyToken, verifyAdmin, async (req, res) => {
   const { userId } = req.params;
   
   try {
@@ -135,6 +377,28 @@ app.delete('/api/users/:userId', verifyToken, async (req, res) => {
     // Prevent deleting other admins
     if (userDoc.data().userType === 'ADMIN') {
       return res.status(403).json({ error: 'Cannot delete admin users' });
+    }
+
+    const userData = userDoc.data();
+
+    // Delete associated Cloudinary images
+    const imagesToDelete = [];
+    if (userData.idDocumentPublicId) imagesToDelete.push(userData.idDocumentPublicId);
+    if (userData.profilePhotoPublicId) imagesToDelete.push(userData.profilePhotoPublicId);
+    if (userData.driverData?.vehiclePhotoPublicId) {
+      imagesToDelete.push(userData.driverData.vehiclePhotoPublicId);
+    }
+
+    // Delete images from Cloudinary
+    for (const publicId of imagesToDelete) {
+      try {
+        await cloudinary.uploader.destroy(publicId, {
+          resource_type: 'image',
+          invalidate: true
+        });
+      } catch (cloudinaryError) {
+        console.error(`Failed to delete image ${publicId}:`, cloudinaryError);
+      }
     }
 
     // Delete from Firebase Authentication
@@ -201,7 +465,7 @@ app.delete('/api/users/:userId', verifyToken, async (req, res) => {
   }
 });
 
-// Disable user endpoint (soft delete alternative)
+// Disable user endpoint (soft delete alternative) - not yet implemented
 app.patch('/api/users/:userId/disable', verifyToken, async (req, res) => {
   const { userId } = req.params;
   
