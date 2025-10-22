@@ -118,7 +118,8 @@ app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
       publicId: publicId,
-      folder: uploadParams.folder
+      folder: uploadParams.folder,
+      transformation: 'w_2000,h_2000,c_limit/q_auto:good/f_auto'
     });
 
   } catch (error) {
