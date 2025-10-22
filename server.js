@@ -40,13 +40,6 @@ async function verifyToken(req, res, next) {
   try {
     const decodedToken = await auth.verifyIdToken(idToken);
     req.user = decodedToken;
-    
-    // Check if user is admin
-    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
-    if (!userDoc.exists || userDoc.data().userType !== 'ADMIN') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-    
     next();
   } catch (error) {
     console.error('Token verification error:', error);
@@ -141,88 +134,62 @@ app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
  * Generate signed upload parameters for ID documents
  * Only authenticated users can request upload signatures
  */
-app.post('/api/cloudinary/sign-upload', async (req, res) => {
-  console.log('=== SIGN UPLOAD REQUEST RECEIVED ===');
-  console.log('Headers:', req.headers);
-  console.log('Body:', req.body);
-  
-  // Manual token verification with logging
-  const authHeader = req.headers.authorization;
-  console.log('Authorization header:', authHeader);
-  
-  if (!authHeader) {
-    console.error('No authorization header');
-    return res.status(401).json({ error: 'No authorization header' });
-  }
-  
-  const idToken = authHeader.split('Bearer ')[1];
-  console.log('Token extracted:', idToken ? 'Yes' : 'No');
-  
-  if (!idToken) {
-    console.error('No token in authorization header');
-    return res.status(401).json({ error: 'No token provided' });
-  }
-
+app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
   try {
-    // Verify token
-    console.log('Verifying token...');
-    const decodedToken = await auth.verifyIdToken(idToken);
-    console.log('Token verified for user:', decodedToken.uid);
-    
-    const { uploadType } = req.body;
-    const userId = decodedToken.uid;
+    const { uploadType } = req.body; // 'id_document', 'profile_photo', etc.
+    const userId = req.user.uid;
 
+    // Validate upload type
     const validUploadTypes = ['id_document', 'profile_photo', 'vehicle_photo'];
     if (!uploadType || !validUploadTypes.includes(uploadType)) {
-      console.error('Invalid upload type:', uploadType);
       return res.status(400).json({ error: 'Invalid upload type' });
     }
 
-    console.log('Generating signature for:', uploadType);
-
+    // Generate unique public_id for the upload
     const timestamp = Math.round(Date.now() / 1000);
     const publicId = `islamove/${uploadType}/${userId}_${timestamp}`;
 
+    // Define upload parameters
     const uploadParams = {
       timestamp: timestamp,
+      upload_preset: 'unsigned_preset', // You'll create this in Cloudinary
       public_id: publicId,
       folder: `islamove/${uploadType}`,
       resource_type: 'image',
-      type: 'upload'
+      type: 'upload',
+      // Security settings
+      access_mode: 'authenticated', // Requires signed URLs to access
+      invalidate: true, // Invalidate CDN cache on update
+      // Transformation settings
+      transformation: [
+        { width: 2000, height: 2000, crop: 'limit' }, // Max dimensions
+        { quality: 'auto:good' }, // Optimize quality
+        { fetch_format: 'auto' } // Auto format (WebP when supported)
+      ]
     };
 
-    console.log('Upload params:', uploadParams);
-    console.log('Cloudinary secret exists:', !!process.env.CLOUDINARY_API_SECRET);
-
+    // Generate signature
     const signature = cloudinary.utils.api_sign_request(
       uploadParams,
       process.env.CLOUDINARY_API_SECRET
     );
 
-    console.log('Signature generated successfully');
-
-    const response = {
+    // Return signed parameters to client
+    res.json({
       signature: signature,
       timestamp: timestamp,
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
       publicId: publicId,
-      folder: uploadParams.folder
-    };
-
-    console.log('Sending response');
-    res.json(response);
+      folder: uploadParams.folder,
+      uploadPreset: uploadParams.upload_preset
+    });
 
   } catch (error) {
-    console.error('=== ERROR IN SIGN UPLOAD ===');
-    console.error('Error type:', error.constructor.name);
-    console.error('Error message:', error.message);
-    console.error('Error code:', error.code);
-    console.error('Stack:', error.stack);
+    console.error('Error generating upload signature:', error);
     res.status(500).json({ 
       error: 'Failed to generate upload signature',
-      details: error.message,
-      code: error.code
+      details: error.message 
     });
   }
 });
