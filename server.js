@@ -127,48 +127,110 @@ app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
  * Generate signed upload parameters for ID documents
  * Only authenticated users can request upload signatures
  */
-app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
+app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
   try {
-    const { uploadType } = req.body; // 'id_document', 'profile_photo', etc.
+    const { publicId, uploadType, secureUrl } = req.body;
     const userId = req.user.uid;
 
-    // Validate upload type
-    const validUploadTypes = ['id_document', 'profile_photo', 'vehicle_photo', 'student_document'];
-    if (!uploadType || !validUploadTypes.includes(uploadType)) {
-      return res.status(400).json({ error: 'Invalid upload type' });
+    console.log('=== VERIFY UPLOAD REQUEST ===');
+    console.log('User ID:', userId);
+    console.log('Public ID:', publicId);
+    console.log('Upload Type:', uploadType);
+    console.log('Secure URL:', secureUrl);
+
+    // Verify the public_id contains the user's ID (security check)
+    if (!publicId.includes(userId)) {
+      console.log('❌ Security check failed: publicId does not contain userId');
+      return res.status(403).json({ error: 'Unauthorized access to resource' });
     }
 
-    // Generate unique public_id for the upload
-    const timestamp = Math.round(Date.now() / 1000);
-    const publicId = `islamove/${uploadType}/${userId}_${timestamp}`;
+    // Verify the upload exists in Cloudinary
+    try {
+      console.log('Checking Cloudinary for resource...');
+      const result = await cloudinary.api.resource(publicId, {
+        resource_type: 'image',
+        type: 'authenticated'
+      });
 
-    const uploadParams = {
-      folder: `islamove/${uploadType}`,
-      public_id: publicId,
-      timestamp: timestamp,
-      type: 'authenticated'  // CRITICAL: Must be in signature
-    };
+      console.log('✅ Found in Cloudinary:', result.secure_url);
 
-    // Generate signature
-    const signature = cloudinary.utils.api_sign_request(
-      uploadParams,
-      process.env.CLOUDINARY_API_SECRET
-    );
+      // Save the secure URL to Firestore based on upload type
+      const updateData = {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
 
-      res.json({
-      signature: signature,
-      timestamp: timestamp,
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      apiKey: process.env.CLOUDINARY_API_KEY,
-      publicId: publicId,
-      folder: uploadParams.folder,
-      uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET
-    });
+      if (uploadType === 'id_document') {
+        updateData.idDocumentUrl = result.secure_url;
+        updateData.idDocumentPublicId = publicId;
+      } else if (uploadType === 'profile_photo') {
+        updateData.photoURL = result.secure_url;
+        updateData.profilePhotoPublicId = publicId;
+      } else if (uploadType === 'vehicle_photo') {
+        updateData['driverData.vehiclePhotoUrl'] = result.secure_url;
+        updateData['driverData.vehiclePhotoPublicId'] = publicId;
+      } else if (uploadType === 'student_document') {
+        updateData.studentDocumentUrl = result.secure_url;
+        updateData.studentDocumentPublicId = publicId;
+      }
+
+      console.log('Updating Firestore with:', updateData);
+      await db.collection('users').doc(userId).update(updateData);
+
+      const response = {
+        success: true,
+        message: 'Upload verified and saved',
+        secureUrl: result.secure_url,
+        publicId: publicId
+      };
+
+      console.log('=== SENDING RESPONSE ===');
+      console.log(JSON.stringify(response, null, 2));
+
+      res.json(response);
+
+    } catch (cloudinaryError) {
+      console.error('⚠️ Cloudinary verification error:', cloudinaryError);
+      
+      // If verification fails, just use the provided URL
+      console.log('Falling back to provided URL:', secureUrl);
+      
+      const updateData = {
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
+      };
+
+      if (uploadType === 'id_document') {
+        updateData.idDocumentUrl = secureUrl;
+        updateData.idDocumentPublicId = publicId;
+      } else if (uploadType === 'profile_photo') {
+        updateData.photoURL = secureUrl;
+        updateData.profilePhotoPublicId = publicId;
+      } else if (uploadType === 'vehicle_photo') {
+        updateData['driverData.vehiclePhotoUrl'] = secureUrl;
+        updateData['driverData.vehiclePhotoPublicId'] = publicId;
+      } else if (uploadType === 'student_document') {
+        updateData.studentDocumentUrl = secureUrl;
+        updateData.studentDocumentPublicId = publicId;
+      }
+
+      await db.collection('users').doc(userId).update(updateData);
+
+      const response = {
+        success: true,
+        message: 'Upload saved (verification skipped)',
+        secureUrl: secureUrl,
+        publicId: publicId
+      };
+
+      console.log('=== SENDING FALLBACK RESPONSE ===');
+      console.log(JSON.stringify(response, null, 2));
+
+      res.json(response);
+    }
 
   } catch (error) {
-    console.error('Error generating upload signature:', error);
+    console.error('❌ Error in verify-upload endpoint:', error);
     res.status(500).json({ 
-      error: 'Failed to generate upload signature',
+      error: 'Failed to verify upload',
       details: error.message 
     });
   }
