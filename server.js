@@ -140,7 +140,7 @@ app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
     const userId = req.user.uid;
 
     // Validate upload type
-    const validUploadTypes = ['id_document', 'profile_photo', 'vehicle_photo'];
+    const validUploadTypes = ['id_document', 'profile_photo', 'vehicle_photo', 'student_document'];
     if (!uploadType || !validUploadTypes.includes(uploadType)) {
       return res.status(400).json({ error: 'Invalid upload type' });
     }
