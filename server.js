@@ -93,17 +93,10 @@ app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
     const publicId = `islamove/${uploadType}/temp_${tempUserId}_${timestamp}`;
 
     const uploadParams = {
-      timestamp: timestamp,
-      public_id: publicId,
       folder: `islamove/${uploadType}`,
-      upload_preset: process.env.CLOUDINARY_UPLOAD_PRESET,
-      access_mode: 'authenticated',
-      invalidate: true,
-      transformation: [
-        { width: 2000, height: 2000, crop: 'limit' },
-        { quality: 'auto:good' },
-        { fetch_format: 'auto' }
-      ]
+      public_id: publicId,
+      timestamp: timestamp,
+      type: 'authenticated'  // CRITICAL: Must be in signature
     };
 
     const signature = cloudinary.utils.api_sign_request(
@@ -149,18 +142,11 @@ app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
     const timestamp = Math.round(Date.now() / 1000);
     const publicId = `islamove/${uploadType}/${userId}_${timestamp}`;
 
-     const uploadParams = {
-      timestamp,
-      public_id: publicId,
+    const uploadParams = {
       folder: `islamove/${uploadType}`,
-      upload_preset: process.env.CLOUDINARY_UPLOAD_PRESET,
-      access_mode: 'authenticated',
-      invalidate: true,
-      transformation: [
-        { width: 2000, height: 2000, crop: 'limit' },
-        { quality: 'auto:good' },
-        { fetch_format: 'auto' }
-      ]
+      public_id: publicId,
+      timestamp: timestamp,
+      type: 'authenticated'  // CRITICAL: Must be in signature
     };
 
     // Generate signature
@@ -169,12 +155,12 @@ app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
       process.env.CLOUDINARY_API_SECRET
     );
 
-     res.json({
-      signature,
-      timestamp,
+      res.json({
+      signature: signature,
+      timestamp: timestamp,
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
-      publicId,
+      publicId: publicId,
       folder: uploadParams.folder,
       uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET
     });
@@ -201,7 +187,7 @@ app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
     try {
       const result = await cloudinary.api.resource(publicId, {
         resource_type: 'image',
-        type: 'upload'
+        type: 'authenticated'  // FIXED: Match the upload type
       });
 
       // Verify the public_id contains the user's ID (security check)
@@ -223,6 +209,9 @@ app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
       } else if (uploadType === 'vehicle_photo') {
         updateData['driverData.vehiclePhotoUrl'] = result.secure_url;
         updateData['driverData.vehiclePhotoPublicId'] = publicId;
+      } else if (uploadType === 'student_document') {
+        updateData.studentDocumentUrl = result.secure_url;
+        updateData.studentDocumentPublicId = publicId;
       }
 
       await db.collection('users').doc(userId).update(updateData);
