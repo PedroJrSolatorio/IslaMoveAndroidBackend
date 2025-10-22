@@ -197,7 +197,7 @@ app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
 
       // Save the secure URL to Firestore based on upload type
       const updateData = {
-        updatedAt: Date.now()
+        updatedAt: admin.firestore.FieldValue.serverTimestamp()
       };
 
       if (uploadType === 'id_document') {
