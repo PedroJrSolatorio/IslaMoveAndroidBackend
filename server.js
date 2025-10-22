@@ -183,22 +183,18 @@ app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
     const { publicId, uploadType, secureUrl } = req.body;
     const userId = req.user.uid;
 
-    // Verify the public_id contains the user's ID (security check)
     if (!publicId.includes(userId)) {
       return res.status(403).json({ error: 'Unauthorized access to resource' });
     }
 
-    // Verify the upload exists in Cloudinary
     try {
       const result = await cloudinary.api.resource(publicId, {
         resource_type: 'image',
         type: 'authenticated'
       });
 
-      // Save the secure URL to Firestore based on upload type
-      const updateData = {
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      };
+      // FIXED: Remove updatedAt timestamp
+      const updateData = {};
 
       if (uploadType === 'id_document') {
         updateData.idDocumentUrl = result.secure_url;
@@ -226,11 +222,8 @@ app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
     } catch (cloudinaryError) {
       console.error('Cloudinary verification error:', cloudinaryError);
       
-      // If verification fails, just use the provided URL
-      // The upload was successful, we just can't verify it right now
-      const updateData = {
-        updatedAt: admin.firestore.FieldValue.serverTimestamp()
-      };
+      // FIXED: Remove updatedAt timestamp from fallback too
+      const updateData = {};
 
       if (uploadType === 'id_document') {
         updateData.idDocumentUrl = secureUrl;
