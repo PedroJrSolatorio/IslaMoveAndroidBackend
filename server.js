@@ -1,7 +1,6 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
-const cloudinary = require('cloudinary').v2;
 require('dotenv').config();
 
 const app = express();
@@ -33,70 +32,19 @@ async function verifyToken(req, res, next) {
   try {
     const decodedToken = await auth.verifyIdToken(idToken);
     req.user = decodedToken;
+    
+    // Check if user is admin
+    const userDoc = await db.collection('users').doc(decodedToken.uid).get();
+    if (!userDoc.exists || userDoc.data().userType !== 'ADMIN') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+    
     next();
   } catch (error) {
     console.error('Token verification error:', error);
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
-
-// Middleware to verify admin access
-async function verifyAdmin(req, res, next) {
-  try {
-    const userDoc = await db.collection('users').doc(req.user.uid).get();
-    if (!userDoc.exists || userDoc.data().userType !== 'ADMIN') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-    next();
-  } catch (error) {
-    console.error('Admin verification error:', error);
-    return res.status(500).json({ error: 'Failed to verify admin access' });
-  }
-}
-
-// /**
-//  * Delete image from Cloudinary
-//  * Only the owner or admin can delete
-//  */
-// app.delete('/api/cloudinary/delete/:publicId', verifyToken, async (req, res) => {
-//   try {
-//     const publicId = decodeURIComponent(req.params.publicId);
-//     const userId = req.user.uid;
-
-//     // Get user document to check if admin
-//     const userDoc = await db.collection('users').doc(userId).get();
-//     const isAdmin = userDoc.exists && userDoc.data().userType === 'ADMIN';
-
-//     // Check permission
-//     if (!isAdmin && !publicId.includes(userId)) {
-//       return res.status(403).json({ error: 'Unauthorized to delete this resource' });
-//     }
-
-//     // Delete from Cloudinary
-//     const result = await cloudinary.uploader.destroy(publicId, {
-//       resource_type: 'image',
-//       type: 'upload',
-//       invalidate: true
-//     });
-
-//     if (result.result === 'ok' || result.result === 'not found') {
-//       res.json({
-//         success: true,
-//         message: 'Image deleted successfully',
-//         result: result.result
-//       });
-//     } else {
-//       throw new Error('Failed to delete image');
-//     }
-
-//   } catch (error) {
-//     console.error('Error deleting image:', error);
-//     res.status(500).json({ 
-//       error: 'Failed to delete image',
-//       details: error.message 
-//     });
-//   }
-// });
 
 app.get('/', (req, res) => {
   res.send('🚀 Server is running! Try /health or your /api routes.');
@@ -169,7 +117,7 @@ app.put('/api/users/:userId/password', verifyToken, async (req, res) => {
 });
 
 // Delete user endpoint
-app.delete('/api/users/:userId', verifyToken, verifyAdmin, async (req, res) => {
+app.delete('/api/users/:userId', verifyToken, async (req, res) => {
   const { userId } = req.params;
   
   try {
@@ -187,28 +135,6 @@ app.delete('/api/users/:userId', verifyToken, verifyAdmin, async (req, res) => {
     // Prevent deleting other admins
     if (userDoc.data().userType === 'ADMIN') {
       return res.status(403).json({ error: 'Cannot delete admin users' });
-    }
-
-    const userData = userDoc.data();
-
-    // Delete associated Cloudinary images
-    const imagesToDelete = [];
-    if (userData.idDocumentPublicId) imagesToDelete.push(userData.idDocumentPublicId);
-    if (userData.profilePhotoPublicId) imagesToDelete.push(userData.profilePhotoPublicId);
-    if (userData.driverData?.vehiclePhotoPublicId) {
-      imagesToDelete.push(userData.driverData.vehiclePhotoPublicId);
-    }
-
-    // Delete images from Cloudinary
-    for (const publicId of imagesToDelete) {
-      try {
-        await cloudinary.uploader.destroy(publicId, {
-          resource_type: 'image',
-          invalidate: true
-        });
-      } catch (cloudinaryError) {
-        console.error(`Failed to delete image ${publicId}:`, cloudinaryError);
-      }
     }
 
     // Delete from Firebase Authentication
@@ -275,7 +201,7 @@ app.delete('/api/users/:userId', verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// Disable user endpoint (soft delete alternative) - not yet implemented
+// Disable user endpoint (soft delete alternative)
 app.patch('/api/users/:userId/disable', verifyToken, async (req, res) => {
   const { userId } = req.params;
   
