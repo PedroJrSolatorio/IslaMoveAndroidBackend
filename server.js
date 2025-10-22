@@ -10,13 +10,6 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
-
 // Initialize Firebase Admin SDK
 // You'll need to download your service account key from Firebase Console
 // const serviceAccount = require('./serviceAccountKey.json'); //Running locally
@@ -61,297 +54,49 @@ async function verifyAdmin(req, res, next) {
   }
 }
 
-app.get('/api/cloudinary/test', (req, res) => {
-  res.json({ 
-    status: 'Cloudinary endpoints available',
-    cloudinaryConfigured: !!(process.env.CLOUDINARY_CLOUD_NAME && 
-                             process.env.CLOUDINARY_API_KEY && 
-                             process.env.CLOUDINARY_API_SECRET)
-  });
-});
+// /**
+//  * Delete image from Cloudinary
+//  * Only the owner or admin can delete
+//  */
+// app.delete('/api/cloudinary/delete/:publicId', verifyToken, async (req, res) => {
+//   try {
+//     const publicId = decodeURIComponent(req.params.publicId);
+//     const userId = req.user.uid;
 
-// ==================== CLOUDINARY SECURE UPLOAD ENDPOINTS ====================
+//     // Get user document to check if admin
+//     const userDoc = await db.collection('users').doc(userId).get();
+//     const isAdmin = userDoc.exists && userDoc.data().userType === 'ADMIN';
 
-/**
- * Generate signed upload parameters for registration (no auth required)
- * Only allows id_document uploads during registration
- */
-app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
-  try {
-    const { uploadType, tempUserId } = req.body;
-    
-    // Only allow id_document for registration
-    if (uploadType !== 'id_document') {
-      return res.status(400).json({ error: 'Only ID document uploads allowed during registration' });
-    }
+//     // Check permission
+//     if (!isAdmin && !publicId.includes(userId)) {
+//       return res.status(403).json({ error: 'Unauthorized to delete this resource' });
+//     }
 
-    if (!tempUserId || tempUserId.length < 10) {
-      return res.status(400).json({ error: 'Invalid temporary user ID' });
-    }
+//     // Delete from Cloudinary
+//     const result = await cloudinary.uploader.destroy(publicId, {
+//       resource_type: 'image',
+//       type: 'upload',
+//       invalidate: true
+//     });
 
-    const timestamp = Math.round(Date.now() / 1000);
-    const publicId = `islamove/${uploadType}/temp_${tempUserId}_${timestamp}`;
+//     if (result.result === 'ok' || result.result === 'not found') {
+//       res.json({
+//         success: true,
+//         message: 'Image deleted successfully',
+//         result: result.result
+//       });
+//     } else {
+//       throw new Error('Failed to delete image');
+//     }
 
-    // FIXED: Include all parameters that will be sent to Cloudinary
-    const uploadParams = {
-      folder: `islamove/${uploadType}`,
-      public_id: publicId,
-      timestamp: timestamp,
-      type: 'authenticated'  // CRITICAL: Must be in signature
-    };
-
-    // Generate signature with these exact parameters
-    const signature = cloudinary.utils.api_sign_request(
-      uploadParams,
-      process.env.CLOUDINARY_API_SECRET
-    );
-
-    res.json({
-      signature: signature,
-      timestamp: timestamp,
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      apiKey: process.env.CLOUDINARY_API_KEY,
-      publicId: publicId,
-      folder: uploadParams.folder
-      // uploadPreset removed - not needed for signed uploads
-    });
-
-  } catch (error) {
-    console.error('Error generating registration upload signature:', error);
-    res.status(500).json({ 
-      error: 'Failed to generate upload signature',
-      details: error.message 
-    });
-  }
-});
-
-/**
- * Generate signed upload parameters for authenticated users
- */
-app.post('/api/cloudinary/sign-upload', verifyToken, async (req, res) => {
-  try {
-    const { uploadType } = req.body;
-    const userId = req.user.uid;
-
-    // Validate upload type
-    const validUploadTypes = ['id_document', 'profile_photo', 'vehicle_photo', 'student_document'];
-    if (!uploadType || !validUploadTypes.includes(uploadType)) {
-      return res.status(400).json({ error: 'Invalid upload type' });
-    }
-
-    const timestamp = Math.round(Date.now() / 1000);
-    const publicId = `${userId}_${timestamp}`; // Don't include folder here
-
-    // FIXED: Include all parameters that will be sent to Cloudinary
-    const uploadParams = {
-      folder: `islamove/${uploadType}`,
-      public_id: publicId, // Just the filename part
-      timestamp: timestamp,
-      type: 'authenticated'  // CRITICAL: Must be in signature
-    };
-
-    // Generate signature with these exact parameters
-    const signature = cloudinary.utils.api_sign_request(
-      uploadParams,
-      process.env.CLOUDINARY_API_SECRET
-    );
-
-    res.json({
-      signature: signature,
-      timestamp: timestamp,
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      apiKey: process.env.CLOUDINARY_API_KEY,
-      publicId: publicId,
-      folder: uploadParams.folder
-      // uploadPreset removed - not needed for signed uploads
-    });
-
-  } catch (error) {
-    console.error('Error generating upload signature:', error);
-    res.status(500).json({ 
-      error: 'Failed to generate upload signature',
-      details: error.message 
-    });
-  }
-});
-
-/**
- * Verify and save uploaded image URL to database
- */
-app.post('/api/cloudinary/verify-upload', verifyToken, async (req, res) => {
-  try {
-    const { publicId, uploadType, secureUrl } = req.body;
-    const userId = req.user.uid;
-
-    if (!publicId.includes(userId)) {
-      return res.status(403).json({ error: 'Unauthorized access to resource' });
-    }
-
-    try {
-      const result = await cloudinary.api.resource(publicId, {
-        resource_type: 'image',
-        type: 'authenticated'
-      });
-
-      // FIXED: Remove updatedAt timestamp
-      const updateData = {};
-
-      if (uploadType === 'id_document') {
-        updateData.idDocumentUrl = result.secure_url;
-        updateData.idDocumentPublicId = publicId;
-      } else if (uploadType === 'profile_photo') {
-        updateData.photoURL = result.secure_url;
-        updateData.profilePhotoPublicId = publicId;
-      } else if (uploadType === 'vehicle_photo') {
-        updateData['driverData.vehiclePhotoUrl'] = result.secure_url;
-        updateData['driverData.vehiclePhotoPublicId'] = publicId;
-      } else if (uploadType === 'student_document') {
-        updateData.studentDocumentUrl = result.secure_url;
-        updateData.studentDocumentPublicId = publicId;
-      }
-
-      await db.collection('users').doc(userId).update(updateData);
-
-      res.json({
-        success: true,
-        message: 'Upload verified and saved',
-        secureUrl: result.secure_url,
-        publicId: publicId
-      });
-
-    } catch (cloudinaryError) {
-      console.error('Cloudinary verification error:', cloudinaryError);
-      
-      // FIXED: Remove updatedAt timestamp from fallback too
-      const updateData = {};
-
-      if (uploadType === 'id_document') {
-        updateData.idDocumentUrl = secureUrl;
-        updateData.idDocumentPublicId = publicId;
-      } else if (uploadType === 'profile_photo') {
-        updateData.photoURL = secureUrl;
-        updateData.profilePhotoPublicId = publicId;
-      } else if (uploadType === 'vehicle_photo') {
-        updateData['driverData.vehiclePhotoUrl'] = secureUrl;
-        updateData['driverData.vehiclePhotoPublicId'] = publicId;
-      } else if (uploadType === 'student_document') {
-        updateData.studentDocumentUrl = secureUrl;
-        updateData.studentDocumentPublicId = publicId;
-      }
-
-      await db.collection('users').doc(userId).update(updateData);
-
-      res.json({
-        success: true,
-        message: 'Upload saved (verification skipped)',
-        secureUrl: secureUrl,
-        publicId: publicId
-      });
-    }
-
-  } catch (error) {
-    console.error('Error verifying upload:', error);
-    res.status(500).json({ 
-      error: 'Failed to verify upload',
-      details: error.message 
-    });
-  }
-});
-
-/**
- * Generate signed URL for viewing private images
- * This allows temporary access to authenticated images
- */
-app.post('/api/cloudinary/get-signed-url', verifyToken, async (req, res) => {
-  try {
-    const { publicId } = req.body;
-    const userId = req.user.uid;
-
-    // Get user document to check permissions
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const userData = userDoc.data();
-    const isAdmin = userData.userType === 'ADMIN';
-
-    // Check if user has permission to view this image
-    // Users can view their own images, admins can view all
-    if (!isAdmin && !publicId.includes(userId)) {
-      return res.status(403).json({ error: 'Unauthorized access to resource' });
-    }
-
-    // Generate signed URL (valid for 1 hour)
-    const signedUrl = cloudinary.utils.private_download_url(
-      publicId,
-      'jpg',
-      {
-        resource_type: 'image',
-        type: 'authenticated',
-        expires_at: Math.round(Date.now() / 1000) + 3600 // 1 hour
-      }
-    );
-
-    res.json({
-      signedUrl: signedUrl,
-      expiresIn: 3600 // seconds
-    });
-
-  } catch (error) {
-    console.error('Error generating signed URL:', error);
-    res.status(500).json({ 
-      error: 'Failed to generate signed URL',
-      details: error.message 
-    });
-  }
-});
-
-/**
- * Delete image from Cloudinary
- * Only the owner or admin can delete
- */
-app.delete('/api/cloudinary/delete/:publicId', verifyToken, async (req, res) => {
-  try {
-    const publicId = decodeURIComponent(req.params.publicId);
-    const userId = req.user.uid;
-
-    // Get user document to check if admin
-    const userDoc = await db.collection('users').doc(userId).get();
-    const isAdmin = userDoc.exists && userDoc.data().userType === 'ADMIN';
-
-    // Check permission
-    if (!isAdmin && !publicId.includes(userId)) {
-      return res.status(403).json({ error: 'Unauthorized to delete this resource' });
-    }
-
-    // Delete from Cloudinary
-    const result = await cloudinary.uploader.destroy(publicId, {
-      resource_type: 'image',
-      type: 'upload',
-      invalidate: true
-    });
-
-    if (result.result === 'ok' || result.result === 'not found') {
-      res.json({
-        success: true,
-        message: 'Image deleted successfully',
-        result: result.result
-      });
-    } else {
-      throw new Error('Failed to delete image');
-    }
-
-  } catch (error) {
-    console.error('Error deleting image:', error);
-    res.status(500).json({ 
-      error: 'Failed to delete image',
-      details: error.message 
-    });
-  }
-});
-
-// ==================== OTHER ENDPOINTS ====================
+//   } catch (error) {
+//     console.error('Error deleting image:', error);
+//     res.status(500).json({ 
+//       error: 'Failed to delete image',
+//       details: error.message 
+//     });
+//   }
+// });
 
 app.get('/', (req, res) => {
   res.send('🚀 Server is running! Try /health or your /api routes.');
