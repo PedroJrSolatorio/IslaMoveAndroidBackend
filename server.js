@@ -70,6 +70,64 @@ async function verifyAdmin(req, res, next) {
 // ==================== CLOUDINARY SECURE UPLOAD ENDPOINTS ====================
 
 /**
+ * Generate signed upload parameters for registration (no auth required)
+ * Only allows id_document uploads during registration
+ */
+app.post('/api/cloudinary/sign-upload-registration', async (req, res) => {
+  try {
+    const { uploadType, tempUserId } = req.body; // tempUserId from client
+    
+    // Only allow id_document for registration
+    if (uploadType !== 'id_document') {
+      return res.status(400).json({ error: 'Only ID document uploads allowed during registration' });
+    }
+
+    if (!tempUserId || tempUserId.length < 10) {
+      return res.status(400).json({ error: 'Invalid temporary user ID' });
+    }
+
+    const timestamp = Math.round(Date.now() / 1000);
+    const publicId = `islamove/${uploadType}/temp_${tempUserId}_${timestamp}`;
+
+    const uploadParams = {
+      timestamp: timestamp,
+      public_id: publicId,
+      folder: `islamove/${uploadType}`,
+      resource_type: 'image',
+      type: 'upload',
+      access_mode: 'authenticated',
+      invalidate: true,
+      transformation: [
+        { width: 2000, height: 2000, crop: 'limit' },
+        { quality: 'auto:good' },
+        { fetch_format: 'auto' }
+      ]
+    };
+
+    const signature = cloudinary.utils.api_sign_request(
+      uploadParams,
+      process.env.CLOUDINARY_API_SECRET
+    );
+
+    res.json({
+      signature: signature,
+      timestamp: timestamp,
+      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
+      apiKey: process.env.CLOUDINARY_API_KEY,
+      publicId: publicId,
+      folder: uploadParams.folder
+    });
+
+  } catch (error) {
+    console.error('Error generating registration upload signature:', error);
+    res.status(500).json({ 
+      error: 'Failed to generate upload signature',
+      details: error.message 
+    });
+  }
+});
+
+/**
  * Generate signed upload parameters for ID documents
  * Only authenticated users can request upload signatures
  */
