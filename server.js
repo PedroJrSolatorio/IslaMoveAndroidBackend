@@ -1,7 +1,6 @@
 const express = require('express');
 const admin = require('firebase-admin');
 const cors = require('cors');
-const cloudinary = require('cloudinary').v2;
 require('dotenv').config();
 
 const app = express();
@@ -9,13 +8,6 @@ const app = express();
 // Middleware
 app.use(cors());
 app.use(express.json());
-
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET
-});
 
 // Initialize Firebase Admin SDK
 // You'll need to download your service account key from Firebase Console
@@ -29,8 +21,8 @@ admin.initializeApp({
 const db = admin.firestore();
 const auth = admin.auth();
 
-// Middleware to verify Firebase ID token (for all authenticated users)
-async function verifyAuthToken(req, res, next) {
+// Middleware to verify Firebase ID token
+async function verifyToken(req, res, next) {
   const idToken = req.headers.authorization?.split('Bearer ')[1];
   
   if (!idToken) {
@@ -41,368 +33,18 @@ async function verifyAuthToken(req, res, next) {
     const decodedToken = await auth.verifyIdToken(idToken);
     req.user = decodedToken;
     
-    // Fetch user data
+    // Check if user is admin
     const userDoc = await db.collection('users').doc(decodedToken.uid).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
+    if (!userDoc.exists || userDoc.data().userType !== 'ADMIN') {
+      return res.status(403).json({ error: 'Admin access required' });
     }
     
-    req.userData = userDoc.data();
     next();
   } catch (error) {
     console.error('Token verification error:', error);
     return res.status(401).json({ error: 'Invalid token' });
   }
 }
-
-// Middleware to verify admin access
-async function verifyAdminToken(req, res, next) {
-  await verifyAuthToken(req, res, () => {
-    if (req.userData.userType !== 'ADMIN') {
-      return res.status(403).json({ error: 'Admin access required' });
-    }
-    next();
-  });
-}
-
-// Helper function to generate signed URL
-function generateSignedUrl(publicId, options = {}) {
-  const defaultOptions = {
-    type: 'authenticated',
-    secure: true,
-    sign_url: true,
-    expires_at: Math.floor(Date.now() / 1000) + (60 * 60), // 1 hour expiration
-    transformation: options.transformation || []
-  };
-  
-  return cloudinary.url(publicId, { ...defaultOptions, ...options });
-}
-
-// Helper function to extract public_id from Cloudinary URL
-function extractPublicId(url) {
-  try {
-    // Example URL: https://res.cloudinary.com/cloud/image/authenticated/v123/folder/file.jpg
-    const matches = url.match(/\/authenticated\/v\d+\/(.+?)(?:\.[^.]+)?$/);
-    return matches ? matches[1] : null;
-  } catch (error) {
-    console.error('Error extracting public_id:', error);
-    return null;
-  }
-}
-
-// Helper function to check if user can access resource
-async function canAccessResource(userId, userType, resourceOwnerId) {
-  // Admin can access everything
-  if (userType === 'ADMIN') return true;
-  
-  // User can access their own resources
-  if (userId === resourceOwnerId) return true;
-  
-  return false;
-}
-
-// ========================================
-// CLOUDINARY SIGNED URL ENDPOINTS
-// ========================================
-
-// Get signed URL for user's own document/profile image
-app.post('/api/images/signed-url', verifyAuthToken, async (req, res) => {
-  const { imageUrl, targetUserId } = req.body;
-  
-  try {
-    // Validate input
-    if (!imageUrl) {
-      return res.status(400).json({ error: 'Image URL is required' });
-    }
-
-    // Determine which user's image we're accessing
-    const ownerId = targetUserId || req.user.uid;
-    
-    // Check access permission
-    const hasAccess = await canAccessResource(
-      req.user.uid,
-      req.userData.userType,
-      ownerId
-    );
-    
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied to this resource' });
-    }
-
-    // Extract public_id from URL
-    const publicId = extractPublicId(imageUrl);
-    if (!publicId) {
-      return res.status(400).json({ error: 'Invalid Cloudinary URL format' });
-    }
-
-    // Generate signed URL
-    const signedUrl = generateSignedUrl(publicId, {
-      expires_at: Math.floor(Date.now() / 1000) + (60 * 60 * 2) // 2 hours
-    });
-
-    res.json({
-      success: true,
-      signedUrl: signedUrl,
-      expiresIn: 7200 // seconds
-    });
-
-  } catch (error) {
-    console.error('Error generating signed URL:', error);
-    res.status(500).json({
-      error: 'Failed to generate signed URL',
-      details: error.message
-    });
-  }
-});
-
-// Batch get signed URLs for multiple images
-app.post('/api/images/batch-signed-urls', verifyAuthToken, async (req, res) => {
-  const { imageUrls, targetUserId } = req.body;
-  
-  try {
-    if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
-      return res.status(400).json({ error: 'Image URLs array is required' });
-    }
-
-    const ownerId = targetUserId || req.user.uid;
-    
-    // Check access permission
-    const hasAccess = await canAccessResource(
-      req.user.uid,
-      req.userData.userType,
-      ownerId
-    );
-    
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied to this resource' });
-    }
-
-    // Generate signed URLs for all images
-    const signedUrls = imageUrls.map(url => {
-      const publicId = extractPublicId(url);
-      if (!publicId) return { original: url, signedUrl: null, error: 'Invalid URL' };
-      
-      try {
-        const signedUrl = generateSignedUrl(publicId);
-        return { original: url, signedUrl, error: null };
-      } catch (error) {
-        return { original: url, signedUrl: null, error: error.message };
-      }
-    });
-
-    res.json({
-      success: true,
-      urls: signedUrls,
-      expiresIn: 3600
-    });
-
-  } catch (error) {
-    console.error('Error generating batch signed URLs:', error);
-    res.status(500).json({
-      error: 'Failed to generate signed URLs',
-      details: error.message
-    });
-  }
-});
-
-// Get signed URL for user profile (includes profile image)
-app.get('/api/users/:userId/profile-image', verifyAuthToken, async (req, res) => {
-  const { userId } = req.params;
-  
-  try {
-    // Check access permission
-    const hasAccess = await canAccessResource(
-      req.user.uid,
-      req.userData.userType,
-      userId
-    );
-    
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Get user document
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const userData = userDoc.data();
-    
-    // Check if user has profile image
-    if (!userData.profileImageUrl) {
-      return res.json({
-        success: true,
-        signedUrl: null,
-        message: 'No profile image set'
-      });
-    }
-
-    // Generate signed URL
-    const publicId = extractPublicId(userData.profileImageUrl);
-    if (!publicId) {
-      return res.status(400).json({ error: 'Invalid profile image URL' });
-    }
-
-    const signedUrl = generateSignedUrl(publicId, {
-      transformation: [
-        { width: 500, height: 500, crop: 'fill', gravity: 'face' }
-      ]
-    });
-
-    res.json({
-      success: true,
-      signedUrl: signedUrl,
-      expiresIn: 3600
-    });
-
-  } catch (error) {
-    console.error('Error fetching profile image:', error);
-    res.status(500).json({
-      error: 'Failed to fetch profile image',
-      details: error.message
-    });
-  }
-});
-
-// Get signed URLs for driver documents (admin or driver only)
-app.get('/api/users/:userId/driver-documents', verifyAuthToken, async (req, res) => {
-  const { userId } = req.params;
-  const { documentType } = req.query; // Optional: filter by document type
-  
-  try {
-    // Check access permission
-    const hasAccess = await canAccessResource(
-      req.user.uid,
-      req.userData.userType,
-      userId
-    );
-    
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Get user document
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const userData = userDoc.data();
-    
-    // Check if user is a driver
-    if (userData.userType !== 'DRIVER' || !userData.driverData) {
-      return res.status(400).json({ error: 'User is not a driver' });
-    }
-
-    const documents = userData.driverData.documents || {};
-    
-    // Filter by document type if specified
-    const docsToProcess = documentType 
-      ? { [documentType]: documents[documentType] }
-      : documents;
-
-    // Generate signed URLs for all document images
-    const signedDocuments = {};
-    
-    for (const [docType, docData] of Object.entries(docsToProcess)) {
-      if (!docData || !docData.images) continue;
-      
-      signedDocuments[docType] = {
-        ...docData,
-        images: docData.images.map(img => {
-          const publicId = extractPublicId(img.url);
-          if (!publicId) return { ...img, signedUrl: null };
-          
-          try {
-            const signedUrl = generateSignedUrl(publicId);
-            return { ...img, signedUrl };
-          } catch (error) {
-            console.error(`Error signing ${docType}:`, error);
-            return { ...img, signedUrl: null };
-          }
-        })
-      };
-    }
-
-    res.json({
-      success: true,
-      documents: signedDocuments,
-      expiresIn: 3600
-    });
-
-  } catch (error) {
-    console.error('Error fetching driver documents:', error);
-    res.status(500).json({
-      error: 'Failed to fetch driver documents',
-      details: error.message
-    });
-  }
-});
-
-// Get signed URL for student document (admin or passenger only)
-app.get('/api/users/:userId/student-document', verifyAuthToken, async (req, res) => {
-  const { userId } = req.params;
-  
-  try {
-    // Check access permission
-    const hasAccess = await canAccessResource(
-      req.user.uid,
-      req.userData.userType,
-      userId
-    );
-    
-    if (!hasAccess) {
-      return res.status(403).json({ error: 'Access denied' });
-    }
-
-    // Get user document
-    const userDoc = await db.collection('users').doc(userId).get();
-    if (!userDoc.exists) {
-      return res.status(404).json({ error: 'User not found' });
-    }
-
-    const userData = userDoc.data();
-    
-    // Check if user has student document
-    if (!userData.studentDocument || !userData.studentDocument.studentIdUrl) {
-      return res.json({
-        success: true,
-        signedUrl: null,
-        message: 'No student document found'
-      });
-    }
-
-    // Generate signed URL
-    const publicId = extractPublicId(userData.studentDocument.studentIdUrl);
-    if (!publicId) {
-      return res.status(400).json({ error: 'Invalid student document URL' });
-    }
-
-    const signedUrl = generateSignedUrl(publicId);
-
-    res.json({
-      success: true,
-      signedUrl: signedUrl,
-      studentDocument: {
-        ...userData.studentDocument,
-        studentIdUrl: signedUrl // Replace with signed URL
-      },
-      expiresIn: 3600
-    });
-
-  } catch (error) {
-    console.error('Error fetching student document:', error);
-    res.status(500).json({
-      error: 'Failed to fetch student document',
-      details: error.message
-    });
-  }
-});
-
-// ========================================
-// OTHER ENDPOINTS
-// ========================================
 
 app.get('/', (req, res) => {
   res.send('🚀 Server is running! Try /health or your /api routes.');
