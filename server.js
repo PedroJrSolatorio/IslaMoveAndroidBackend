@@ -493,6 +493,6 @@ app.post("/api/ratings/:ratingId/update-stats", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
-  console.log(`📧 Email endpoint: http://localhost:${PORT}/api/send-email`);
-  console.log(`✅ CORS enabled for:`, allowedOrigins);
+  console.log(`Email endpoint: http://localhost:${PORT}/api/send-email`);
+  console.log(`CORS enabled for:`, allowedOrigins);
 });
