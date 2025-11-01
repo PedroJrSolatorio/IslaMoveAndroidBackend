@@ -11,10 +11,12 @@ const app = express();
 app.use(
   cors({
     origin: ["http://localhost:5173", "https://your-frontend-domain.com"],
-    methods: ["GET", "POST"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
 );
+// Handle preflight OPTIONS requests
+app.options("*", cors());
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
