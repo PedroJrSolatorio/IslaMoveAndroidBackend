@@ -6,16 +6,26 @@ require("dotenv").config();
 
 const app = express();
 
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://islamove-admin.vercel.app", // your Vercel frontend domain
+];
+
 // Middleware
-// Allow requests from your frontend (localhost + production)
 app.use(
   cors({
-    origin: ["http://localhost:5173", "https://your-frontend-domain.com"],
-    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    origin: function (origin, callback) {
+      // allow requests with no origin (like mobile apps or curl)
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      } else {
+        return callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
   })
 );
-// Handle preflight OPTIONS requests
 app.options("*", cors());
 app.use(express.json());
 
