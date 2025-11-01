@@ -86,6 +86,7 @@ app.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date().toISOString() });
 });
 
+// Send approval email
 app.post("/api/send-email", async (req, res) => {
   console.log("📧 Email request received");
   console.log("Origin:", req.headers.origin);
@@ -127,7 +128,7 @@ app.post("/api/send-email", async (req, res) => {
       body: JSON.stringify({
         sender: sender || {
           name: "Islamove Admin",
-          email: "noreply@islamove.com",
+          email: process.env.SENDER_EMAIL || "noreply@islamove.com",
         },
         to,
         subject,
