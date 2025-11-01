@@ -8,7 +8,7 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://islamove-admin.vercel.app", // Vercel frontend domain (to be updated)
+  "https://isla-move-android-admin-web.vercel.app/",
 ];
 
 // CORS configuration - MORE PERMISSIVE
