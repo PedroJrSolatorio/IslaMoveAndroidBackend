@@ -7,7 +7,14 @@ require("dotenv").config();
 const app = express();
 
 // Middleware
-app.use(cors());
+// Allow requests from your frontend (localhost + production)
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "https://your-frontend-domain.com"],
+    methods: ["GET", "POST"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
