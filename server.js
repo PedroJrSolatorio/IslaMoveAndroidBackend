@@ -58,10 +58,10 @@ app.get("/health", (req, res) => {
 
 app.post("/api/send-email", async (req, res) => {
   try {
-    const { to, subject, htmlContent } = req.body;
+    const { sender, to, subject, htmlContent } = req.body;
 
-    if (!to || !subject || !htmlContent) {
-      return res.status(400).json({ error: "Missing required fields" });
+    if (!to || !Array.isArray(to) || !subject || !htmlContent) {
+      return res.status(400).json({ error: "Missing or invalid fields" });
     }
 
     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
@@ -72,15 +72,23 @@ app.post("/api/send-email", async (req, res) => {
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        sender: { name: "Islamove Admin", email: "noreply@yourdomain.com" },
-        to: [{ email: to }],
+        sender: sender || {
+          name: "Islamove Admin",
+          email: "noreply@islamove.com",
+        },
+        to,
         subject,
         htmlContent,
       }),
     });
 
     const data = await response.json();
-    res.status(response.ok ? 200 : 500).json(data);
+    if (!response.ok) {
+      console.error("Brevo API error:", data);
+      return res.status(response.status).json(data);
+    }
+
+    res.status(200).json(data);
   } catch (error) {
     console.error("Error sending email:", error);
     res
