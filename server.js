@@ -90,69 +90,82 @@ app.get("/health", (req, res) => {
 app.post("/api/send-email", async (req, res) => {
   console.log("📧 Email request received");
   console.log("Origin:", req.headers.origin);
-  console.log("Body:", JSON.stringify(req.body, null, 2));
 
   try {
     const { sender, to, subject, htmlContent } = req.body;
 
     // Validate request
     if (!to || !Array.isArray(to) || to.length === 0) {
-      console.error("❌ Invalid 'to' field");
-      return res
-        .status(400)
-        .json({ error: "Invalid 'to' field - must be non-empty array" });
+      return res.status(400).json({ error: "Invalid 'to' field" });
     }
 
     if (!subject || !htmlContent) {
-      console.error("❌ Missing subject or htmlContent");
-      return res
-        .status(400)
-        .json({ error: "Missing required fields: subject, htmlContent" });
+      return res.status(400).json({ error: "Missing subject or htmlContent" });
     }
 
-    if (!process.env.BREVO_API_KEY) {
-      console.error("❌ BREVO_API_KEY not configured");
-      return res.status(500).json({ error: "Email service not configured" });
+    // CHECK IF API KEY EXISTS
+    const apiKey = process.env.BREVO_API_KEY;
+    if (!apiKey) {
+      console.error("❌ BREVO_API_KEY environment variable not set!");
+      return res
+        .status(500)
+        .json({ error: "Email service not configured - missing API key" });
     }
+
+    // LOG API KEY INFO (first/last 4 chars only for security)
+    console.log("API Key present:", apiKey ? "Yes" : "No");
+    console.log("API Key length:", apiKey?.length);
+    console.log(
+      "API Key preview:",
+      apiKey
+        ? `${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`
+        : "N/A"
+    );
 
     console.log("Sending email to:", to[0].email);
     console.log("Subject:", subject);
+
+    const brevoPayload = {
+      sender: sender || {
+        name: "Islamove Admin",
+        email: "noreply@islamove.com",
+      },
+      to,
+      subject,
+      htmlContent,
+    };
+
+    console.log("Brevo payload:", JSON.stringify(brevoPayload, null, 2));
 
     const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
         accept: "application/json",
-        "api-key": process.env.BREVO_API_KEY,
+        "api-key": apiKey,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        sender: sender || {
-          name: "Islamove Admin",
-          email: process.env.SENDER_EMAIL || "noreply@islamove.com",
-        },
-        to,
-        subject,
-        htmlContent,
-      }),
+      body: JSON.stringify(brevoPayload),
     });
 
+    console.log("Brevo response status:", brevoResponse.status);
+
     const data = await brevoResponse.json();
+    console.log("Brevo response data:", JSON.stringify(data, null, 2));
 
     if (!brevoResponse.ok) {
       console.error("❌ Brevo API error:", data);
       return res.status(brevoResponse.status).json({
         error: "Brevo API error",
         details: data,
+        statusCode: brevoResponse.status,
       });
     }
 
-    console.log("✅ Email sent successfully!");
-    console.log("Message ID:", data.messageId);
+    console.log("✅ Email sent successfully! Message ID:", data.messageId);
 
     res.status(200).json({
       success: true,
       messageId: data.messageId,
-      message: "Email sent successfully",
     });
   } catch (error) {
     console.error("❌ Server error:", error);
@@ -164,9 +177,15 @@ app.post("/api/send-email", async (req, res) => {
 });
 
 app.get("/api/test-email", (req, res) => {
+  const apiKey = process.env.BREVO_API_KEY;
   res.json({
-    message: "Email endpoint exists!",
-    hasBrevoKey: !!process.env.BREVO_API_KEY,
+    message: "✅ Email endpoint is configured!",
+    hasBrevoKey: !!apiKey,
+    keyLength: apiKey?.length || 0,
+    keyPreview: apiKey
+      ? `${apiKey.substring(0, 10)}...${apiKey.substring(apiKey.length - 4)}`
+      : "Not set",
+    endpoint: "/api/send-email",
   });
 });
 
