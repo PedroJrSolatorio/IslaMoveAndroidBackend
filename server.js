@@ -87,18 +87,37 @@ app.get("/health", (req, res) => {
 });
 
 app.post("/api/send-email", async (req, res) => {
-  console.log("📧 Email request received from:", req.headers.origin);
+  console.log("📧 Email request received");
+  console.log("Origin:", req.headers.origin);
+  console.log("Body:", JSON.stringify(req.body, null, 2));
 
   try {
     const { sender, to, subject, htmlContent } = req.body;
 
-    if (!to || !Array.isArray(to) || !subject || !htmlContent) {
-      return res.status(400).json({ error: "Missing or invalid fields" });
+    // Validate request
+    if (!to || !Array.isArray(to) || to.length === 0) {
+      console.error("❌ Invalid 'to' field");
+      return res
+        .status(400)
+        .json({ error: "Invalid 'to' field - must be non-empty array" });
+    }
+
+    if (!subject || !htmlContent) {
+      console.error("❌ Missing subject or htmlContent");
+      return res
+        .status(400)
+        .json({ error: "Missing required fields: subject, htmlContent" });
+    }
+
+    if (!process.env.BREVO_API_KEY) {
+      console.error("❌ BREVO_API_KEY not configured");
+      return res.status(500).json({ error: "Email service not configured" });
     }
 
     console.log("Sending email to:", to[0].email);
+    console.log("Subject:", subject);
 
-    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+    const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
       headers: {
         accept: "application/json",
@@ -116,17 +135,26 @@ app.post("/api/send-email", async (req, res) => {
       }),
     });
 
-    const data = await response.json();
+    const data = await brevoResponse.json();
 
-    if (!response.ok) {
-      console.error("Brevo API error:", data);
-      return res.status(response.status).json(data);
+    if (!brevoResponse.ok) {
+      console.error("❌ Brevo API error:", data);
+      return res.status(brevoResponse.status).json({
+        error: "Brevo API error",
+        details: data,
+      });
     }
 
-    console.log("✅ Email sent successfully:", data.messageId);
-    res.status(200).json(data);
+    console.log("✅ Email sent successfully!");
+    console.log("Message ID:", data.messageId);
+
+    res.status(200).json({
+      success: true,
+      messageId: data.messageId,
+      message: "Email sent successfully",
+    });
   } catch (error) {
-    console.error("❌ Error sending email:", error);
+    console.error("❌ Server error:", error);
     res.status(500).json({
       error: "Failed to send email",
       details: error.message,
