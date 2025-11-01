@@ -8,25 +8,36 @@ const app = express();
 
 const allowedOrigins = [
   "http://localhost:5173",
-  "https://islamove-admin.vercel.app", // your Vercel frontend domain
+  "https://islamove-admin.vercel.app", // Vercel frontend domain (to be updated)
 ];
 
-// Middleware
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      // allow requests with no origin (like mobile apps or curl)
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) {
-        return callback(null, true);
-      } else {
-        return callback(new Error("Not allowed by CORS"));
-      }
-    },
-    credentials: true,
-  })
-);
-app.options("*", cors());
+// CORS configuration - MORE PERMISSIVE
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, Postman, etc.)
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      console.log("Blocked origin:", origin);
+      callback(new Error("Not allowed by CORS"));
+    }
+  },
+  credentials: true,
+  methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept"],
+  exposedHeaders: ["Content-Length", "Content-Type"],
+  maxAge: 86400, // 24 hours
+};
+
+// Apply CORS middleware BEFORE other middleware
+app.use(cors(corsOptions));
+
+// Handle preflight requests explicitly
+app.options("*", cors(corsOptions));
+
+// Body parser middleware
 app.use(express.json());
 
 // Initialize Firebase Admin SDK
@@ -76,12 +87,16 @@ app.get("/health", (req, res) => {
 });
 
 app.post("/api/send-email", async (req, res) => {
+  console.log("📧 Email request received from:", req.headers.origin);
+
   try {
     const { sender, to, subject, htmlContent } = req.body;
 
     if (!to || !Array.isArray(to) || !subject || !htmlContent) {
       return res.status(400).json({ error: "Missing or invalid fields" });
     }
+
+    console.log("Sending email to:", to[0].email);
 
     const response = await fetch("https://api.brevo.com/v3/smtp/email", {
       method: "POST",
@@ -102,17 +117,20 @@ app.post("/api/send-email", async (req, res) => {
     });
 
     const data = await response.json();
+
     if (!response.ok) {
       console.error("Brevo API error:", data);
       return res.status(response.status).json(data);
     }
 
+    console.log("✅ Email sent successfully:", data.messageId);
     res.status(200).json(data);
   } catch (error) {
-    console.error("Error sending email:", error);
-    res
-      .status(500)
-      .json({ error: "Failed to send email", details: error.message });
+    console.error("❌ Error sending email:", error);
+    res.status(500).json({
+      error: "Failed to send email",
+      details: error.message,
+    });
   }
 });
 
@@ -475,4 +493,6 @@ app.post("/api/ratings/:ratingId/update-stats", async (req, res) => {
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log(`📧 Email endpoint: http://localhost:${PORT}/api/send-email`);
+  console.log(`✅ CORS enabled for:`, allowedOrigins);
 });
