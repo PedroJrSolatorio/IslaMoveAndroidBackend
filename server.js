@@ -162,6 +162,13 @@ app.post("/api/send-email", async (req, res) => {
   }
 });
 
+app.get("/api/test-email", (req, res) => {
+  res.json({
+    message: "Email endpoint exists!",
+    hasBrevoKey: !!process.env.BREVO_API_KEY,
+  });
+});
+
 // Update user password endpoint
 app.put("/api/users/:userId/password", verifyToken, async (req, res) => {
   const { userId } = req.params;
