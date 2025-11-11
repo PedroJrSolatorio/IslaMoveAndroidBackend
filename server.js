@@ -2,6 +2,8 @@ const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
 const fetch = require("node-fetch");
+const multer = require("multer");
+const cloudinary = require("cloudinary").v2;
 require("dotenv").config();
 
 const app = express();
@@ -76,6 +78,100 @@ async function verifyToken(req, res, next) {
     return res.status(401).json({ error: "Invalid token" });
   }
 }
+
+// Configure Cloudinary on backend (SAFE!)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET, // Safe on server
+});
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+});
+
+// Secure Document Upload
+app.post(
+  "/api/upload-document",
+  verifyToken, // Your existing auth middleware
+  upload.single("document"),
+  async (req, res) => {
+    try {
+      const { documentType, userId } = req.body;
+      const file = req.file;
+
+      // 1. SECURITY: User can only upload their own documents
+      if (req.user.uid !== userId) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+
+      // 2. SECURITY: Validate file type
+      const allowedTypes = ["image/jpeg", "image/png", "image/jpg"];
+      if (!allowedTypes.includes(file.mimetype)) {
+        return res.status(400).json({ error: "Invalid file type" });
+      }
+
+      // 3. SECURITY: Upload with private access
+      const uploadResult = await new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          {
+            folder: `driver_documents/${userId}`,
+            resource_type: "image",
+            type: "private", // ✅ CRITICAL: Private upload
+            access_mode: "authenticated", // ✅ Requires signed URL
+            public_id: `${documentType}_${Date.now()}`,
+            tags: [userId, documentType],
+            context: {
+              user_id: userId,
+              document_type: documentType,
+              uploaded_at: new Date().toISOString(),
+            },
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        );
+        uploadStream.end(file.buffer);
+      });
+
+      res.json({
+        success: true,
+        imageUrl: uploadResult.secure_url,
+        publicId: uploadResult.public_id,
+      });
+    } catch (error) {
+      console.error("Upload error:", error);
+      res.status(500).json({ error: "Upload failed" });
+    }
+  }
+);
+
+// Generate Signed URL for Viewing
+app.get("/api/document-url/:publicId", verifyToken, async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    const userId = req.user.uid;
+
+    // Verify user owns this document (check if publicId contains userId)
+    if (!publicId.includes(userId)) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Generate signed URL (expires in 1 hour)
+    const signedUrl = cloudinary.url(publicId, {
+      type: "private",
+      sign_url: true,
+      expires_at: Math.floor(Date.now() / 1000) + 3600,
+    });
+
+    res.json({ url: signedUrl, expiresIn: 3600 });
+  } catch (error) {
+    console.error("Error generating signed URL:", error);
+    res.status(500).json({ error: "Failed to generate URL" });
+  }
+});
 
 app.get("/", (req, res) => {
   res.send("🚀 Server is running! Try /health or your /api routes.");
