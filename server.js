@@ -91,6 +91,50 @@ const upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
 });
 
+// Special endpoint for registration uploads (no auth required)
+app.post(
+  "/api/upload-registration-document",
+  upload.single("document"),
+  async (req, res) => {
+    try {
+      const { documentType, tempUserId } = req.body; // tempUserId = email or phone
+      const file = req.file;
+
+      // Basic validation only
+      if (!file || !documentType || !tempUserId) {
+        return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Upload to temporary folder
+      const uploadResult = await new Promise((resolve, reject) => {
+        const uploadStream = cloudinary.uploader.upload_stream(
+          {
+            folder: `registration_temp/${tempUserId}`,
+            resource_type: "image",
+            type: "private",
+            access_mode: "authenticated",
+            public_id: `${documentType}_${Date.now()}`,
+          },
+          (error, result) => {
+            if (error) reject(error);
+            else resolve(result);
+          }
+        );
+        uploadStream.end(file.buffer);
+      });
+
+      res.json({
+        success: true,
+        imageUrl: uploadResult.secure_url,
+        publicId: uploadResult.public_id,
+      });
+    } catch (error) {
+      console.error("Registration upload error:", error);
+      res.status(500).json({ error: "Upload failed" });
+    }
+  }
+);
+
 // Secure Document Upload
 app.post(
   "/api/upload-document",
