@@ -96,28 +96,67 @@ app.post(
   "/api/upload-registration-document",
   upload.single("document"),
   async (req, res) => {
+    console.log("📤 Registration document upload request received");
+
     try {
-      const { documentType, tempUserId } = req.body; // tempUserId = email or phone
+      const { documentType, tempUserId } = req.body;
       const file = req.file;
 
-      // Basic validation only
-      if (!file || !documentType || !tempUserId) {
-        return res.status(400).json({ error: "Missing required fields" });
+      // 1. Validation
+      if (!file) {
+        return res.status(400).json({ error: "No file provided" });
       }
 
-      // Upload to temporary folder
+      if (!documentType) {
+        return res.status(400).json({ error: "Document type required" });
+      }
+
+      if (!tempUserId) {
+        return res.status(400).json({ error: "Temporary user ID required" });
+      }
+
+      // 2. Validate file type
+      const allowedTypes = ["image/jpeg", "image/png", "image/jpg"];
+      if (!allowedTypes.includes(file.mimetype)) {
+        return res.status(400).json({
+          error: "Invalid file type. Only JPG and PNG allowed",
+        });
+      }
+
+      // 3. Validate file size (5MB max)
+      if (file.size > 5 * 1024 * 1024) {
+        return res.status(400).json({
+          error: "File too large. Maximum size is 5MB",
+        });
+      }
+
+      console.log(`Uploading ${documentType} for temp user: ${tempUserId}`);
+
+      // 4. Upload to Cloudinary in temporary folder
       const uploadResult = await new Promise((resolve, reject) => {
         const uploadStream = cloudinary.uploader.upload_stream(
           {
             folder: `registration_temp/${tempUserId}`,
             resource_type: "image",
-            type: "private",
-            access_mode: "authenticated",
+            type: "private", // Private access
+            access_mode: "authenticated", // Requires signed URL
             public_id: `${documentType}_${Date.now()}`,
+            tags: ["registration", tempUserId, documentType],
+            context: {
+              temp_user_id: tempUserId,
+              document_type: documentType,
+              uploaded_at: new Date().toISOString(),
+              status: "pending_registration",
+            },
           },
           (error, result) => {
-            if (error) reject(error);
-            else resolve(result);
+            if (error) {
+              console.error("Cloudinary upload error:", error);
+              reject(error);
+            } else {
+              console.log("✅ Upload successful:", result.public_id);
+              resolve(result);
+            }
           }
         );
         uploadStream.end(file.buffer);
@@ -127,10 +166,78 @@ app.post(
         success: true,
         imageUrl: uploadResult.secure_url,
         publicId: uploadResult.public_id,
+        message: "Document uploaded successfully",
       });
     } catch (error) {
-      console.error("Registration upload error:", error);
-      res.status(500).json({ error: "Upload failed" });
+      console.error("❌ Registration upload error:", error);
+      res.status(500).json({
+        error: "Upload failed",
+        details: error.message,
+      });
+    }
+  }
+);
+
+// Move registration documents to permanent folder after successful registration
+app.post(
+  "/api/finalize-registration-documents",
+  verifyToken, // Now they're authenticated
+  async (req, res) => {
+    console.log("📦 Finalizing registration documents");
+
+    try {
+      const { tempUserId, userId } = req.body;
+
+      // Security: Verify the authenticated user matches
+      if (req.user.uid !== userId) {
+        return res.status(403).json({ error: "Unauthorized" });
+      }
+
+      // Get all documents in registration_temp folder
+      const result = await cloudinary.api.resources({
+        type: "private",
+        prefix: `registration_temp/${tempUserId}`,
+        max_results: 50,
+      });
+
+      if (result.resources.length === 0) {
+        return res.json({
+          success: true,
+          message: "No documents to move",
+          movedCount: 0,
+        });
+      }
+
+      // Move each document to the user's permanent folder
+      const movePromises = result.resources.map(async (resource) => {
+        const oldPublicId = resource.public_id;
+        const filename = oldPublicId.split("/").pop();
+        const newPublicId = `driver_documents/${userId}/${filename}`;
+
+        // Rename (move) the file
+        return cloudinary.uploader.rename(oldPublicId, newPublicId, {
+          type: "private",
+          invalidate: true,
+        });
+      });
+
+      await Promise.all(movePromises);
+
+      console.log(
+        `✅ Moved ${result.resources.length} documents for user ${userId}`
+      );
+
+      res.json({
+        success: true,
+        message: "Documents moved successfully",
+        movedCount: result.resources.length,
+      });
+    } catch (error) {
+      console.error("❌ Error finalizing documents:", error);
+      res.status(500).json({
+        error: "Failed to finalize documents",
+        details: error.message,
+      });
     }
   }
 );
