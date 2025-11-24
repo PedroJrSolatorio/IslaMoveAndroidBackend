@@ -2,6 +2,7 @@ const express = require("express");
 const admin = require("firebase-admin");
 const cors = require("cors");
 const fetch = require("node-fetch");
+const cloudinary = require("cloudinary").v2;
 require("dotenv").config();
 
 const app = express();
@@ -39,6 +40,13 @@ app.options("*", cors(corsOptions));
 
 // Body parser middleware
 app.use(express.json());
+
+// Configure Cloudinary (add after Firebase initialization)
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 // Initialize Firebase Admin SDK
 // You'll need to download your service account key from Firebase Console
@@ -544,6 +552,63 @@ app.post("/api/ratings/:ratingId/update-stats", async (req, res) => {
     });
   }
 });
+
+app.post(
+  "/api/delete-temp-registration-docs",
+  verifyToken,
+  async (req, res) => {
+    console.log("Delete temp registration docs request");
+
+    try {
+      const { tempUserId } = req.body;
+
+      if (!tempUserId) {
+        return res.status(400).json({ error: "Temp user ID required" });
+      }
+
+      // Get all resources in the temp folder
+      const result = await cloudinary.api.resources({
+        type: "upload",
+        prefix: `registration_temp/${tempUserId}`,
+        max_results: 500,
+      });
+
+      if (result.resources.length === 0) {
+        return res.json({
+          success: true,
+          message: "No files to delete",
+          deletedCount: 0,
+        });
+      }
+
+      // Delete all files
+      const deletePromises = result.resources.map((resource) =>
+        cloudinary.uploader.destroy(resource.public_id, {
+          resource_type: "image",
+          invalidate: true,
+        })
+      );
+
+      await Promise.all(deletePromises);
+
+      console.log(
+        `Deleted ${result.resources.length} temp files for ${tempUserId}`
+      );
+
+      res.json({
+        success: true,
+        message: "Temp files deleted successfully",
+        deletedCount: result.resources.length,
+      });
+    } catch (error) {
+      console.error("Error deleting temp files:", error);
+      res.status(500).json({
+        error: "Failed to delete temp files",
+        details: error.message,
+      });
+    }
+  }
+);
 
 // ===== KEEP RENDER AWAKE =====
 if (process.env.NODE_ENV === "production") {
