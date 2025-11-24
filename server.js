@@ -626,10 +626,10 @@ app.post("/api/delete-specific-temp-doc", verifyToken, async (req, res) => {
     // Map document types to their Cloudinary naming patterns
     const docTypeMap = {
       passenger_id: "passenger_id",
-      drivers_license: "license",
-      sjmoda: "insurance",
-      or: "vehicle_inspection",
-      cr: "vehicle_registration",
+      license: "license",
+      insurance: "insurance",
+      vehicle_inspection: "vehicle_inspection",
+      vehicle_registration: "vehicle_registration",
     };
 
     const cloudinaryDocType = docTypeMap[documentType];
