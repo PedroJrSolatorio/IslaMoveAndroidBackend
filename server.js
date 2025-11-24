@@ -545,6 +545,23 @@ app.post("/api/ratings/:ratingId/update-stats", async (req, res) => {
   }
 });
 
+// ===== KEEP RENDER AWAKE =====
+if (process.env.NODE_ENV === "production") {
+  const RENDER_URL = process.env.RENDER_BASE_URL;
+
+  console.log("🔄 Starting keep-alive service...");
+
+  setInterval(async () => {
+    try {
+      const response = await fetch(`${RENDER_URL}/health`);
+      const timestamp = new Date().toLocaleTimeString();
+      console.log(`⏰ [${timestamp}] Keep-alive ping: ${response.status}`);
+    } catch (error) {
+      console.log("⏰ Keep-alive ping failed:", error.message);
+    }
+  }, 14 * 60 * 1000); // Ping every 14 minutes
+}
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
