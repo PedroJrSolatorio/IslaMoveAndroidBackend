@@ -553,89 +553,149 @@ app.post("/api/ratings/:ratingId/update-stats", async (req, res) => {
   }
 });
 
-app.post("/api/delete-specific-temp-doc", verifyToken, async (req, res) => {
-  console.log("Delete specific temp document request");
+app.post(
+  "/api/delete-temp-registration-docs",
+  verifyToken,
+  async (req, res) => {
+    console.log("Delete temp registration docs request");
 
-  try {
-    const { tempUserId, documentType } = req.body;
+    try {
+      const { tempUserId } = req.body;
 
-    if (!tempUserId || !documentType) {
-      return res
-        .status(400)
-        .json({ error: "Temp user ID and document type required" });
-    }
+      if (!tempUserId) {
+        return res.status(400).json({ error: "Temp user ID required" });
+      }
 
-    // Map document types to their Cloudinary naming patterns
-    const docTypeMap = {
-      passenger_id: "passenger_id",
-      drivers_license: "drivers_license",
-      sjmoda: "sjmoda",
-      or: "or",
-      cr: "cr",
-    };
+      // Get all resources in the temp folder
+      const result = await cloudinary.api.resources({
+        type: "upload",
+        prefix: `registration_temp/${tempUserId}`,
+        max_results: 500,
+      });
 
-    const cloudinaryDocType = docTypeMap[documentType];
-    if (!cloudinaryDocType) {
-      return res.status(400).json({ error: "Invalid document type" });
-    }
+      if (result.resources.length === 0) {
+        return res.json({
+          success: true,
+          message: "No files to delete",
+          deletedCount: 0,
+        });
+      }
 
-    // Get all resources in the temp folder for this user
-    const result = await cloudinary.api.resources({
-      type: "upload",
-      prefix: `registration_temp/${tempUserId}`,
-      max_results: 500,
-    });
+      // Delete all files
+      const deletePromises = result.resources.map((resource) =>
+        cloudinary.uploader.destroy(resource.public_id, {
+          resource_type: "image",
+          invalidate: true,
+        })
+      );
 
-    if (result.resources.length === 0) {
-      return res.json({
+      await Promise.all(deletePromises);
+
+      console.log(
+        `Deleted ${result.resources.length} temp files for ${tempUserId}`
+      );
+
+      res.json({
         success: true,
-        message: "No files to delete",
-        deletedCount: 0,
+        message: "Temp files deleted successfully",
+        deletedCount: result.resources.length,
+      });
+    } catch (error) {
+      console.error("Error deleting temp files:", error);
+      res.status(500).json({
+        error: "Failed to delete temp files",
+        details: error.message,
       });
     }
-
-    // Filter to only delete files matching this specific document type
-    const filesToDelete = result.resources.filter((resource) => {
-      const publicId = resource.public_id;
-      // Match files that contain the document type in their name
-      return publicId.includes(`/${cloudinaryDocType}_`);
-    });
-
-    if (filesToDelete.length === 0) {
-      return res.json({
-        success: true,
-        message: `No ${documentType} files found to delete`,
-        deletedCount: 0,
-      });
-    }
-
-    // Delete only the matched files
-    const deletePromises = filesToDelete.map((resource) =>
-      cloudinary.uploader.destroy(resource.public_id, {
-        resource_type: "image",
-        invalidate: true,
-      })
-    );
-
-    await Promise.all(deletePromises);
-
-    console.log(
-      `✅ Deleted ${filesToDelete.length} temp file(s) for ${documentType} (user: ${tempUserId})`
-    );
-
-    res.json({
-      success: true,
-      message: `Deleted ${filesToDelete.length} file(s) for ${documentType}`,
-      deletedCount: filesToDelete.length,
-    });
-  } catch (error) {
-    console.error("Error deleting specific temp file:", error);
-    res.status(500).json({
-      error: "Failed to delete specific temp file",
-      details: error.message,
-    });
   }
-});
+);
+
+// // Delete specific temp document by type
+// app.post(
+//   "/api/delete-specific-temp-doc",
+//   verifyToken,
+//   async (req, res) => {
+//     console.log("Delete specific temp document request");
+
+//     try {
+//       const { tempUserId, documentType } = req.body;
+
+//       if (!tempUserId || !documentType) {
+//         return res.status(400).json({ error: "Temp user ID and document type required" });
+//       }
+
+//       // Map document types to their Cloudinary naming patterns
+//       const docTypeMap = {
+//         'passenger_id': 'passenger_id',
+//         'drivers_license': 'drivers_license',
+//         'sjmoda': 'sjmoda',
+//         'or': 'or',
+//         'cr': 'cr'
+//       };
+
+//       const cloudinaryDocType = docTypeMap[documentType];
+//       if (!cloudinaryDocType) {
+//         return res.status(400).json({ error: "Invalid document type" });
+//       }
+
+//       // Get all resources in the temp folder for this user
+//       const result = await cloudinary.api.resources({
+//         type: "upload",
+//         prefix: `registration_temp/${tempUserId}`,
+//         max_results: 500,
+//       });
+
+//       if (result.resources.length === 0) {
+//         return res.json({
+//           success: true,
+//           message: "No files to delete",
+//           deletedCount: 0,
+//         });
+//       }
+
+//       // Filter to only delete files matching this specific document type
+//       const filesToDelete = result.resources.filter(resource => {
+//         const publicId = resource.public_id;
+//         // Match files that contain the document type in their name
+//         return publicId.includes(`/${cloudinaryDocType}_`);
+//       });
+
+//       if (filesToDelete.length === 0) {
+//         return res.json({
+//           success: true,
+//           message: `No ${documentType} files found to delete`,
+//           deletedCount: 0,
+//         });
+//       }
+
+//       // Delete only the matched files
+//       const deletePromises = filesToDelete.map((resource) =>
+//         cloudinary.uploader.destroy(resource.public_id, {
+//           resource_type: "image",
+//           invalidate: true,
+//         })
+//       );
+
+//       await Promise.all(deletePromises);
+
+//       console.log(
+//         `✅ Deleted ${filesToDelete.length} temp file(s) for ${documentType} (user: ${tempUserId})`
+//       );
+
+//       res.json({
+//         success: true,
+//         message: `Deleted ${filesToDelete.length} file(s) for ${documentType}`,
+//         deletedCount: filesToDelete.length,
+//       });
+//     } catch (error) {
+//       console.error("Error deleting specific temp file:", error);
+//       res.status(500).json({
+//         error: "Failed to delete specific temp file",
+//         details: error.message,
+//       });
+//     }
+//   }
+// );
 
 // ===== KEEP RENDER AWAKE =====
 if (process.env.NODE_ENV === "production") {
