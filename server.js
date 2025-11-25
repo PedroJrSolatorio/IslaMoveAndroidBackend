@@ -60,7 +60,25 @@ admin.initializeApp({
 const db = admin.firestore();
 const auth = admin.auth();
 
-// Middleware to verify Firebase ID token
+// Middleware to verify Firebase ID token (for regular authenticated users)
+async function authenticateToken(req, res, next) {
+  const idToken = req.headers.authorization?.split("Bearer ")[1];
+
+  if (!idToken) {
+    return res.status(401).json({ error: "No token provided" });
+  }
+
+  try {
+    const decodedToken = await auth.verifyIdToken(idToken);
+    req.user = decodedToken;
+    next();
+  } catch (error) {
+    console.error("Token verification error:", error);
+    return res.status(401).json({ error: "Invalid token" });
+  }
+}
+
+// Middleware to verify Firebase ID token AND check admin access
 async function verifyToken(req, res, next) {
   const idToken = req.headers.authorization?.split("Bearer ")[1];
 
@@ -695,7 +713,7 @@ app.post("/api/delete-specific-temp-doc", verifyToken, async (req, res) => {
   }
 });
 
-app.delete("/api/delete-image", verifyToken, async (req, res) => {
+app.delete("/api/delete-image", authenticateToken, async (req, res) => {
   try {
     const { publicId } = req.body;
     const userId = req.user.uid;
