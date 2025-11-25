@@ -628,7 +628,7 @@ app.post(
   }
 );
 
-// Delete specific temp document by type
+// Delete specific temp document by type - not used
 app.post("/api/delete-specific-temp-doc", verifyToken, async (req, res) => {
   console.log("Delete specific temp document request");
 
