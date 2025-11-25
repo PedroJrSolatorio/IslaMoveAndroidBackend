@@ -96,7 +96,7 @@ app.get("/health", (req, res) => {
 
 // Send approval email
 app.post("/api/send-email", async (req, res) => {
-  console.log("📧 Email request received");
+  console.log("Email request received");
   console.log("Origin:", req.headers.origin);
 
   try {
@@ -114,7 +114,7 @@ app.post("/api/send-email", async (req, res) => {
     // CHECK IF API KEY EXISTS
     const apiKey = process.env.BREVO_API_KEY;
     if (!apiKey) {
-      console.error("❌ BREVO_API_KEY environment variable not set!");
+      console.error("BREVO_API_KEY environment variable not set!");
       return res
         .status(500)
         .json({ error: "Email service not configured - missing API key" });
@@ -678,7 +678,7 @@ app.post("/api/delete-specific-temp-doc", verifyToken, async (req, res) => {
     await Promise.all(deletePromises);
 
     console.log(
-      `✅ Deleted ${filesToDelete.length} temp file(s) for ${documentType} (user: ${tempUserId})`
+      `Deleted ${filesToDelete.length} temp file(s) for ${documentType} (user: ${tempUserId})`
     );
 
     res.json({
@@ -695,19 +695,40 @@ app.post("/api/delete-specific-temp-doc", verifyToken, async (req, res) => {
   }
 });
 
+app.delete("/api/delete-image", verifyToken, async (req, res) => {
+  try {
+    const { publicId } = req.body;
+    const userId = req.user.uid;
+
+    // Verify the publicId belongs to this user for security
+    if (!publicId.includes(`profile_pictures/${userId}`)) {
+      return res.status(403).json({ error: "Unauthorized" });
+    }
+
+    // Delete from Cloudinary
+    const result = await cloudinary.uploader.destroy(publicId);
+
+    console.log(`Deleted image: ${publicId}`, result);
+    res.json({ success: true, result });
+  } catch (error) {
+    console.error("Delete error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // ===== KEEP RENDER AWAKE =====
 if (process.env.NODE_ENV === "production") {
   const RENDER_URL = process.env.RENDER_BASE_URL;
 
-  console.log("🔄 Starting keep-alive service...");
+  console.log("Starting keep-alive service...");
 
   setInterval(async () => {
     try {
       const response = await fetch(`${RENDER_URL}/health`);
       const timestamp = new Date().toLocaleTimeString();
-      console.log(`⏰ [${timestamp}] Keep-alive ping: ${response.status}`);
+      console.log(`[${timestamp}] Keep-alive ping: ${response.status}`);
     } catch (error) {
-      console.log("⏰ Keep-alive ping failed:", error.message);
+      console.log("Keep-alive ping failed:", error.message);
     }
   }, 14 * 60 * 1000); // Ping every 14 minutes
 }
