@@ -724,7 +724,9 @@ app.delete("/api/delete-image", authenticateToken, async (req, res) => {
     }
 
     // Delete from Cloudinary
-    const result = await cloudinary.uploader.destroy(publicId);
+    const result = await cloudinary.uploader.destroy(publicId, {
+      invalidate: true, // This invalidates the CDN cache
+    });
 
     console.log(`Deleted image: ${publicId}`, result);
     res.json({ success: true, result });
