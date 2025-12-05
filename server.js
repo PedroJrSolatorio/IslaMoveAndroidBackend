@@ -4,6 +4,7 @@ const cors = require("cors");
 const fetch = require("node-fetch");
 const cloudinary = require("cloudinary").v2;
 require("dotenv").config();
+const cron = require("node-cron");
 
 const app = express();
 
@@ -59,6 +60,583 @@ admin.initializeApp({
 
 const db = admin.firestore();
 const auth = admin.auth();
+
+// Usage tracking
+let mapboxMonthlyUsage = {
+  directions: 0,
+  geocoding: 0,
+  lastReset: Date.now(),
+  monthlyLimit: parseInt(process.env.MAPBOX_MONTHLY_LIMIT) || 100000, // Free tier limit
+  alerts: {
+    warned75: false,
+    warned90: false,
+    warned95: false,
+  },
+};
+
+// Load usage from Firebase on startup
+async function loadMapboxUsage() {
+  try {
+    const usageDoc = await db
+      .collection("system_config")
+      .doc("mapbox_usage")
+      .get();
+    if (usageDoc.exists) {
+      const data = usageDoc.data();
+      const now = Date.now();
+      const monthInMs = 30 * 24 * 60 * 60 * 1000;
+
+      // Reset if it's been more than a month
+      if (now - data.lastReset > monthInMs) {
+        console.log("📊 Monthly Mapbox usage reset");
+        console.log(
+          `📈 Last month usage: Directions: ${data.directions}, Geocoding: ${
+            data.geocoding
+          }, Total: ${data.directions + data.geocoding}`
+        );
+
+        // Send monthly report before reset
+        await sendMonthlyReport(data);
+
+        mapboxMonthlyUsage = {
+          directions: 0,
+          geocoding: 0,
+          lastReset: now,
+          monthlyLimit: parseInt(process.env.MAPBOX_MONTHLY_LIMIT) || 100000,
+          alerts: { warned75: false, warned90: false, warned95: false },
+        };
+        await saveMapboxUsage();
+      } else {
+        mapboxMonthlyUsage = {
+          ...data,
+          monthlyLimit: parseInt(process.env.MAPBOX_MONTHLY_LIMIT) || 100000,
+        };
+        console.log("📊 Loaded existing Mapbox usage:", {
+          total: data.directions + data.geocoding,
+          limit: mapboxMonthlyUsage.monthlyLimit,
+        });
+      }
+    } else {
+      console.log("📊 Initializing new Mapbox usage tracking");
+      await saveMapboxUsage();
+    }
+  } catch (error) {
+    console.error("❌ Error loading Mapbox usage:", error);
+  }
+}
+
+// Save usage to Firebase
+async function saveMapboxUsage() {
+  try {
+    await db
+      .collection("system_config")
+      .doc("mapbox_usage")
+      .set({
+        ...mapboxMonthlyUsage,
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp(),
+      });
+  } catch (error) {
+    console.error("❌ Error saving Mapbox usage:", error);
+  }
+}
+
+// Check if usage limit is exceeded
+function checkMapboxUsageLimit(apiType = "directions") {
+  const totalUsage =
+    mapboxMonthlyUsage.directions + mapboxMonthlyUsage.geocoding;
+  const usagePercent = (totalUsage / mapboxMonthlyUsage.monthlyLimit) * 100;
+
+  // Send alerts at different thresholds
+  if (usagePercent >= 95 && !mapboxMonthlyUsage.alerts.warned95) {
+    console.error("🚨🚨🚨 CRITICAL: Mapbox usage at 95%!");
+    sendAlertEmail(
+      "CRITICAL: Mapbox API Usage at 95% - IMMEDIATE ACTION REQUIRED",
+      `Your Mapbox API usage has reached 95% of the monthly limit!
+      
+Usage: ${totalUsage.toLocaleString()} / ${mapboxMonthlyUsage.monthlyLimit.toLocaleString()} requests
+Remaining: ${(
+        mapboxMonthlyUsage.monthlyLimit - totalUsage
+      ).toLocaleString()} requests
+
+⚠️ API calls will be blocked at 95% to prevent overage charges.
+
+Breakdown:
+- Directions API: ${mapboxMonthlyUsage.directions.toLocaleString()} requests
+- Geocoding API: ${mapboxMonthlyUsage.geocoding.toLocaleString()} requests
+
+Action Required:
+1. Check for unusual usage patterns in your dashboard
+2. Consider upgrading your Mapbox plan
+3. Implement additional caching
+4. Review your API usage logs
+
+Dashboard: https://account.mapbox.com/
+
+This is an automated alert from your IslaMove backend.`
+    );
+    mapboxMonthlyUsage.alerts.warned95 = true;
+    saveMapboxUsage();
+  } else if (usagePercent >= 90 && !mapboxMonthlyUsage.alerts.warned90) {
+    console.error("🚨 CRITICAL: Mapbox usage at 90%!");
+    sendAlertEmail(
+      "CRITICAL: Mapbox API Usage at 90%",
+      `Your Mapbox API usage has reached 90% of the monthly limit.
+      
+Usage: ${totalUsage.toLocaleString()} / ${mapboxMonthlyUsage.monthlyLimit.toLocaleString()} requests
+Remaining: ${(
+        mapboxMonthlyUsage.monthlyLimit - totalUsage
+      ).toLocaleString()} requests
+
+Breakdown:
+- Directions API: ${mapboxMonthlyUsage.directions.toLocaleString()} requests
+- Geocoding API: ${mapboxMonthlyUsage.geocoding.toLocaleString()} requests
+
+Recommended Actions:
+1. Monitor usage closely over the next few days
+2. Consider implementing stricter rate limits
+3. Review caching strategies
+4. Plan for potential upgrade if growth continues
+
+Dashboard: https://account.mapbox.com/`
+    );
+    mapboxMonthlyUsage.alerts.warned90 = true;
+    saveMapboxUsage();
+  } else if (usagePercent >= 75 && !mapboxMonthlyUsage.alerts.warned75) {
+    console.warn("⚠️ WARNING: Mapbox usage at 75%");
+    sendAlertEmail(
+      "WARNING: Mapbox API Usage at 75%",
+      `Your Mapbox API usage has reached 75% of the monthly limit.
+      
+Usage: ${totalUsage.toLocaleString()} / ${mapboxMonthlyUsage.monthlyLimit.toLocaleString()} requests
+Remaining: ${(
+        mapboxMonthlyUsage.monthlyLimit - totalUsage
+      ).toLocaleString()} requests
+
+Breakdown:
+- Directions API: ${mapboxMonthlyUsage.directions.toLocaleString()} requests
+- Geocoding API: ${mapboxMonthlyUsage.geocoding.toLocaleString()} requests
+
+This is a heads-up that you're approaching your monthly limit. No action required yet, but monitor usage.
+
+Dashboard: https://account.mapbox.com/`
+    );
+    mapboxMonthlyUsage.alerts.warned75 = true;
+    saveMapboxUsage();
+  }
+
+  // Hard limit at 95% to leave buffer and prevent overage charges
+  if (totalUsage >= mapboxMonthlyUsage.monthlyLimit * 0.95) {
+    console.error("🛑 Mapbox monthly limit exceeded (95%)!");
+    return false;
+  }
+
+  return true;
+}
+
+// Track API call
+async function trackMapboxCall(apiType = "directions") {
+  mapboxMonthlyUsage[apiType]++;
+
+  // Save to Firebase every 10 calls to reduce write operations
+  if (
+    (mapboxMonthlyUsage.directions + mapboxMonthlyUsage.geocoding) % 50 ===
+    0
+  ) {
+    await saveMapboxUsage();
+  }
+
+  const totalUsage =
+    mapboxMonthlyUsage.directions + mapboxMonthlyUsage.geocoding;
+  const usagePercent = (
+    (totalUsage / mapboxMonthlyUsage.monthlyLimit) *
+    100
+  ).toFixed(1);
+
+  console.log(
+    `📊 Mapbox ${apiType} call tracked. Total: ${totalUsage.toLocaleString()}/${mapboxMonthlyUsage.monthlyLimit.toLocaleString()} (${usagePercent}%)`
+  );
+
+  // Check thresholds after tracking
+  checkMapboxUsageLimit(apiType);
+}
+
+// Send alert email using your existing Brevo setup
+async function sendAlertEmail(subject, body) {
+  try {
+    const alertEmail = process.env.MAPBOX_ALERT_EMAIL;
+
+    if (!alertEmail) {
+      console.log("⚠️ MAPBOX_ALERT_EMAIL not configured, skipping email alert");
+      console.log("Alert:", subject);
+      return;
+    }
+
+    const apiKey = process.env.BREVO_API_KEY;
+    if (!apiKey) {
+      console.error("❌ BREVO_API_KEY not configured, cannot send alert email");
+      return;
+    }
+
+    const brevoPayload = {
+      sender: {
+        name: "IslaMove Monitoring",
+        email: "noreply@islamove.com",
+      },
+      to: [{ email: alertEmail }],
+      subject: subject,
+      htmlContent: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <div style="background-color: #f44336; color: white; padding: 20px; border-radius: 5px 5px 0 0;">
+            <h2 style="margin: 0;">🚨 IslaMove Alert</h2>
+          </div>
+          <div style="background-color: #f5f5f5; padding: 20px; border-radius: 0 0 5px 5px;">
+            <div style="background-color: white; padding: 20px; border-radius: 5px;">
+              <pre style="white-space: pre-wrap; font-family: monospace; font-size: 14px;">${body}</pre>
+            </div>
+            <p style="margin-top: 20px; font-size: 12px; color: #666;">
+              Timestamp: ${new Date().toISOString()}<br>
+              Server: ${process.env.RENDER_BASE_URL || "Unknown"}
+            </p>
+          </div>
+        </div>
+      `,
+    };
+
+    const brevoResponse = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "api-key": apiKey,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify(brevoPayload),
+    });
+
+    if (brevoResponse.ok) {
+      console.log("✅ Alert email sent successfully");
+    } else {
+      const errorData = await brevoResponse.json();
+      console.error("❌ Failed to send alert email:", errorData);
+    }
+  } catch (error) {
+    console.error("❌ Error sending alert email:", error);
+  }
+}
+
+// Send weekly report
+async function sendWeeklyReport(stats) {
+  try {
+    const totalUsage = stats.directions + stats.geocoding;
+    const usagePercent = ((totalUsage / stats.monthlyLimit) * 100).toFixed(1);
+    const daysIntoMonth = Math.floor(
+      (Date.now() - stats.lastReset) / (24 * 60 * 60 * 1000)
+    );
+    const projectedMonthlyUsage = Math.floor((totalUsage / daysIntoMonth) * 30);
+
+    await sendAlertEmail(
+      "📊 Weekly Mapbox API Usage Report",
+      `IslaMove Mapbox API Usage - Week of ${new Date().toLocaleDateString()}
+
+Current Usage:
+- Total: ${totalUsage.toLocaleString()} / ${stats.monthlyLimit.toLocaleString()} (${usagePercent}%)
+- Directions API: ${stats.directions.toLocaleString()} requests
+- Geocoding API: ${stats.geocoding.toLocaleString()} requests
+
+Progress:
+- Days into month: ${daysIntoMonth} / 30
+- Average daily usage: ${Math.floor(
+        totalUsage / daysIntoMonth
+      ).toLocaleString()} requests/day
+- Projected monthly usage: ${projectedMonthlyUsage.toLocaleString()} requests
+
+Status: ${
+        usagePercent >= 90
+          ? "🔴 CRITICAL - Approaching limit"
+          : usagePercent >= 75
+          ? "🟡 WARNING - Monitor closely"
+          : usagePercent >= 50
+          ? "🟢 GOOD - On track"
+          : "🟢 EXCELLENT - Well under limit"
+      }
+
+${
+  projectedMonthlyUsage > stats.monthlyLimit
+    ? `⚠️ WARNING: At current rate, you will exceed your monthly limit by ${(
+        projectedMonthlyUsage - stats.monthlyLimit
+      ).toLocaleString()} requests.`
+    : "✅ Projected usage is within monthly limit."
+}
+
+Dashboard: https://account.mapbox.com/
+Backend: ${process.env.RENDER_BASE_URL || "Unknown"}/api/mapbox/usage`
+    );
+
+    console.log("✅ Weekly report sent");
+  } catch (error) {
+    console.error("❌ Error sending weekly report:", error);
+  }
+}
+
+// Send monthly summary before reset
+async function sendMonthlyReport(lastMonthData) {
+  try {
+    const totalUsage = lastMonthData.directions + lastMonthData.geocoding;
+    const usagePercent = (
+      (totalUsage / lastMonthData.monthlyLimit) *
+      100
+    ).toFixed(1);
+    const estimatedCost =
+      totalUsage > lastMonthData.monthlyLimit
+        ? ((totalUsage - lastMonthData.monthlyLimit) / 1000) * 0.5
+        : 0;
+
+    await sendAlertEmail(
+      "📈 Monthly Mapbox API Usage Summary",
+      `IslaMove Mapbox API - Monthly Summary
+
+Period: Last 30 days
+Reset Date: ${new Date().toLocaleDateString()}
+
+Final Usage:
+- Total: ${totalUsage.toLocaleString()} / ${lastMonthData.monthlyLimit.toLocaleString()} (${usagePercent}%)
+- Directions API: ${lastMonthData.directions.toLocaleString()} requests
+- Geocoding API: ${lastMonthData.geocoding.toLocaleString()} requests
+
+Performance:
+${
+  totalUsage <= lastMonthData.monthlyLimit
+    ? "✅ Stayed within free tier limit"
+    : `❌ Exceeded free tier by ${(
+        totalUsage - lastMonthData.monthlyLimit
+      ).toLocaleString()} requests`
+}
+
+Estimated Overage Cost: $${estimatedCost.toFixed(2)}
+
+Average Daily Usage: ${Math.floor(
+        totalUsage / 30
+      ).toLocaleString()} requests/day
+
+---
+
+New Month Starting:
+Your usage counter has been reset to 0.
+Continue monitoring at: ${
+        process.env.RENDER_BASE_URL || "Unknown"
+      }/api/mapbox/usage`
+    );
+
+    console.log("✅ Monthly summary sent");
+  } catch (error) {
+    console.error("❌ Error sending monthly report:", error);
+  }
+}
+
+// Initialize usage tracking on server start
+loadMapboxUsage();
+
+// ===== API ENDPOINTS =====
+
+// Get current Mapbox usage stats
+app.get("/api/mapbox/usage", async (req, res) => {
+  try {
+    const totalUsage =
+      mapboxMonthlyUsage.directions + mapboxMonthlyUsage.geocoding;
+    const usagePercent = (
+      (totalUsage / mapboxMonthlyUsage.monthlyLimit) *
+      100
+    ).toFixed(1);
+    const daysUntilReset = Math.ceil(
+      (30 * 24 * 60 * 60 * 1000 - (Date.now() - mapboxMonthlyUsage.lastReset)) /
+        (24 * 60 * 60 * 1000)
+    );
+    const daysIntoMonth = Math.floor(
+      (Date.now() - mapboxMonthlyUsage.lastReset) / (24 * 60 * 60 * 1000)
+    );
+    const avgDailyUsage =
+      daysIntoMonth > 0 ? Math.floor(totalUsage / daysIntoMonth) : 0;
+    const projectedMonthlyUsage = avgDailyUsage * 30;
+
+    res.json({
+      usage: {
+        directions: mapboxMonthlyUsage.directions,
+        geocoding: mapboxMonthlyUsage.geocoding,
+        total: totalUsage,
+        limit: mapboxMonthlyUsage.monthlyLimit,
+        remaining: Math.max(0, mapboxMonthlyUsage.monthlyLimit - totalUsage),
+        percentUsed: parseFloat(usagePercent),
+      },
+      status:
+        totalUsage >= mapboxMonthlyUsage.monthlyLimit * 0.95
+          ? "CRITICAL"
+          : totalUsage >= mapboxMonthlyUsage.monthlyLimit * 0.9
+          ? "CRITICAL"
+          : totalUsage >= mapboxMonthlyUsage.monthlyLimit * 0.75
+          ? "WARNING"
+          : "OK",
+      daysUntilReset: Math.max(0, daysUntilReset),
+      daysIntoMonth: daysIntoMonth,
+      avgDailyUsage: avgDailyUsage,
+      projectedMonthlyUsage: projectedMonthlyUsage,
+      willExceedLimit: projectedMonthlyUsage > mapboxMonthlyUsage.monthlyLimit,
+      lastReset: new Date(mapboxMonthlyUsage.lastReset).toISOString(),
+    });
+  } catch (error) {
+    console.error("Error fetching usage:", error);
+    res.status(500).json({ error: "Failed to fetch usage stats" });
+  }
+});
+
+// Proxy endpoint for Mapbox Directions API with rate limiting
+app.post("/api/mapbox/directions", async (req, res) => {
+  try {
+    // Check usage limit
+    if (!checkMapboxUsageLimit("directions")) {
+      return res.status(429).json({
+        error: "Monthly Mapbox API limit exceeded (95%)",
+        fallback: true,
+        message: "Using fallback route calculation to prevent overage charges",
+      });
+    }
+
+    const { coordinates } = req.body;
+
+    if (!coordinates) {
+      return res.status(400).json({ error: "Coordinates required" });
+    }
+
+    const mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
+    if (!mapboxToken) {
+      return res.status(500).json({ error: "Mapbox token not configured" });
+    }
+
+    const url = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates}?access_token=${mapboxToken}&geometries=polyline6&overview=full&steps=true`;
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (response.ok) {
+      // Track successful API call
+      await trackMapboxCall("directions");
+    }
+
+    res.json(data);
+  } catch (error) {
+    console.error("Mapbox Directions API error:", error);
+    res.status(500).json({
+      error: "Failed to get directions",
+      fallback: true,
+    });
+  }
+});
+
+// Proxy endpoint for Mapbox Geocoding API with rate limiting
+app.post("/api/mapbox/geocode", async (req, res) => {
+  try {
+    // Check usage limit
+    if (!checkMapboxUsageLimit("geocoding")) {
+      return res.status(429).json({
+        error: "Monthly Mapbox API limit exceeded (95%)",
+        fallback: true,
+      });
+    }
+
+    const { query, proximity } = req.body;
+
+    if (!query) {
+      return res.status(400).json({ error: "Query required" });
+    }
+
+    const mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
+    if (!mapboxToken) {
+      return res.status(500).json({ error: "Mapbox token not configured" });
+    }
+
+    let url = `https://api.mapbox.com/geocoding/v5/mapbox.places/${encodeURIComponent(
+      query
+    )}.json?access_token=${mapboxToken}&country=PH&types=region,district,locality,place`;
+
+    if (proximity) {
+      url += `&proximity=${proximity}`;
+    }
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (response.ok) {
+      // Track successful API call
+      await trackMapboxCall("geocoding");
+    }
+
+    res.json(data);
+  } catch (error) {
+    console.error("Mapbox Geocoding API error:", error);
+    res.status(500).json({
+      error: "Failed to geocode",
+      fallback: true,
+    });
+  }
+});
+
+// Manual usage reset endpoint (admin only)
+app.post("/api/mapbox/reset-usage", verifyToken, async (req, res) => {
+  try {
+    const oldUsage = { ...mapboxMonthlyUsage };
+
+    mapboxMonthlyUsage = {
+      directions: 0,
+      geocoding: 0,
+      lastReset: Date.now(),
+      monthlyLimit: parseInt(process.env.MAPBOX_MONTHLY_LIMIT) || 100000,
+      alerts: { warned75: false, warned90: false, warned95: false },
+    };
+
+    await saveMapboxUsage();
+
+    console.log("📊 Manual usage reset by admin:", req.user.uid);
+    console.log("Old usage:", oldUsage);
+
+    res.json({
+      success: true,
+      message: "Usage reset successfully",
+      oldUsage: {
+        total: oldUsage.directions + oldUsage.geocoding,
+        directions: oldUsage.directions,
+        geocoding: oldUsage.geocoding,
+      },
+      newUsage: mapboxMonthlyUsage,
+    });
+  } catch (error) {
+    console.error("Error resetting usage:", error);
+    res.status(500).json({ error: "Failed to reset usage" });
+  }
+});
+
+// ===== CRON JOBS =====
+
+// Weekly report - Every Monday at 2 AM
+cron.schedule(
+  "0 2 * * 1",
+  async () => {
+    await sendWeeklyReport(mapboxMonthlyUsage);
+  },
+  { timezone: "Asia/Manila" }
+);
+
+// Monthly reset - once per day at midnight
+cron.schedule(
+  "0 0 * * *",
+  async () => {
+    const now = Date.now();
+    const monthInMs = 30 * 24 * 60 * 60 * 1000;
+    if (now - mapboxMonthlyUsage.lastReset > monthInMs) {
+      await loadMapboxUsage();
+    }
+  },
+  { timezone: "Asia/Manila" }
+);
+
+// =============================
 
 // Middleware to verify Firebase ID token (for regular authenticated users)
 async function authenticateToken(req, res, next) {
