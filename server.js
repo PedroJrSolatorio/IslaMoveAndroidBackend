@@ -908,7 +908,6 @@ async function deleteUserCloudinaryImages(userId) {
     // Delete from each folder
     for (const folder of folders) {
       try {
-        // Get all resources in this folder
         const result = await cloudinary.api.resources({
           type: "upload",
           prefix: folder,
@@ -918,7 +917,6 @@ async function deleteUserCloudinaryImages(userId) {
         if (result.resources.length > 0) {
           console.log(`Found ${result.resources.length} images in ${folder}`);
 
-          // Delete all images in this folder
           const deletePromises = result.resources.map((resource) =>
             cloudinary.uploader.destroy(resource.public_id, {
               resource_type: "image",
@@ -928,7 +926,6 @@ async function deleteUserCloudinaryImages(userId) {
 
           await Promise.all(deletePromises);
 
-          // Track deletions by folder type
           if (folder.includes("profile_pictures")) {
             deletionResults.profilePictures += result.resources.length;
           } else if (folder.includes("registration_temp")) {
@@ -943,20 +940,51 @@ async function deleteUserCloudinaryImages(userId) {
           );
         }
       } catch (folderError) {
-        // If folder doesn't exist or is empty, that's okay
         if (folderError.error?.http_code !== 404) {
           console.error(`Error deleting from ${folder}:`, folderError);
         }
       }
     }
 
-    // Try to delete the folders themselves (optional - Cloudinary may auto-remove empty folders)
+    // ADDITIONAL: Search and delete by tags (catches orphaned registration images)
+    try {
+      console.log(`Searching for images tagged with user ID: ${userId}`);
+      const taggedResult = await cloudinary.api.resources_by_tag(userId, {
+        max_results: 500,
+        resource_type: "image",
+      });
+
+      if (taggedResult.resources.length > 0) {
+        console.log(
+          `Found ${taggedResult.resources.length} additional images by tag`
+        );
+
+        const deleteTaggedPromises = taggedResult.resources.map((resource) =>
+          cloudinary.uploader.destroy(resource.public_id, {
+            resource_type: "image",
+            invalidate: true,
+          })
+        );
+
+        await Promise.all(deleteTaggedPromises);
+
+        deletionResults.tempFiles += taggedResult.resources.length;
+        deletionResults.total += taggedResult.resources.length;
+        console.log(
+          `✓ Deleted ${taggedResult.resources.length} images found by tag`
+        );
+      }
+    } catch (tagError) {
+      console.error("Error deleting by tag:", tagError);
+    }
+
+    // Try to delete the folders themselves
     for (const folder of folders) {
       try {
         await cloudinary.api.delete_folder(folder);
         console.log(`✓ Deleted folder: ${folder}`);
       } catch (error) {
-        // Ignore folder deletion errors - folder might not exist or already be deleted
+        // Ignore folder deletion errors
       }
     }
 
