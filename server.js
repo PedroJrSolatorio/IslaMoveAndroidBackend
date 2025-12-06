@@ -885,6 +885,92 @@ app.put("/api/users/:userId/password", verifyToken, async (req, res) => {
   }
 });
 
+// Helper function to delete all Cloudinary images for a user
+async function deleteUserCloudinaryImages(userId) {
+  try {
+    console.log(`Starting Cloudinary cleanup for user: ${userId}`);
+
+    const deletionResults = {
+      profilePictures: 0,
+      documents: 0,
+      tempFiles: 0,
+      total: 0,
+    };
+
+    // Define all possible folders where user images might be stored
+    const folders = [
+      `profile_pictures/${userId}`,
+      `driver_documents/${userId}`,
+      `passenger_documents/${userId}`,
+      `registration_temp/${userId}`,
+    ];
+
+    // Delete from each folder
+    for (const folder of folders) {
+      try {
+        // Get all resources in this folder
+        const result = await cloudinary.api.resources({
+          type: "upload",
+          prefix: folder,
+          max_results: 500,
+        });
+
+        if (result.resources.length > 0) {
+          console.log(`Found ${result.resources.length} images in ${folder}`);
+
+          // Delete all images in this folder
+          const deletePromises = result.resources.map((resource) =>
+            cloudinary.uploader.destroy(resource.public_id, {
+              resource_type: "image",
+              invalidate: true,
+            })
+          );
+
+          await Promise.all(deletePromises);
+
+          // Track deletions by folder type
+          if (folder.includes("profile_pictures")) {
+            deletionResults.profilePictures += result.resources.length;
+          } else if (folder.includes("registration_temp")) {
+            deletionResults.tempFiles += result.resources.length;
+          } else {
+            deletionResults.documents += result.resources.length;
+          }
+
+          deletionResults.total += result.resources.length;
+          console.log(
+            `✓ Deleted ${result.resources.length} images from ${folder}`
+          );
+        }
+      } catch (folderError) {
+        // If folder doesn't exist or is empty, that's okay
+        if (folderError.error?.http_code !== 404) {
+          console.error(`Error deleting from ${folder}:`, folderError);
+        }
+      }
+    }
+
+    // Try to delete the folders themselves (optional - Cloudinary may auto-remove empty folders)
+    for (const folder of folders) {
+      try {
+        await cloudinary.api.delete_folder(folder);
+        console.log(`✓ Deleted folder: ${folder}`);
+      } catch (error) {
+        // Ignore folder deletion errors - folder might not exist or already be deleted
+      }
+    }
+
+    console.log(
+      `Cloudinary cleanup complete for user ${userId}:`,
+      deletionResults
+    );
+    return deletionResults;
+  } catch (error) {
+    console.error("Error deleting user Cloudinary images:", error);
+    throw error;
+  }
+}
+
 // Delete user endpoint
 app.delete("/api/users/:userId", verifyToken, async (req, res) => {
   const { userId } = req.params;
@@ -904,6 +990,21 @@ app.delete("/api/users/:userId", verifyToken, async (req, res) => {
     // Prevent deleting other admins
     if (userDoc.data().userType === "ADMIN") {
       return res.status(403).json({ error: "Cannot delete admin users" });
+    }
+
+    // Delete all Cloudinary images for this user
+    let cloudinaryResults = null;
+    try {
+      cloudinaryResults = await deleteUserCloudinaryImages(userId);
+      console.log(
+        `✓ Deleted ${cloudinaryResults.total} images from Cloudinary`
+      );
+    } catch (cloudinaryError) {
+      console.error(
+        "Cloudinary deletion failed, continuing with user deletion:",
+        cloudinaryError
+      );
+      // Don't fail the entire operation if Cloudinary fails
     }
 
     // Delete from Firebase Authentication
@@ -941,11 +1042,14 @@ app.delete("/api/users/:userId", verifyToken, async (req, res) => {
       .where("fromUserId", "==", userId)
       .get();
 
-    const ratingsBatch = db.batch();
-    ratingsSnapshot.docs.forEach((doc) => {
-      ratingsBatch.delete(doc.ref);
-    });
-    await ratingsBatch.commit();
+    if (ratingsSnapshot.size > 0) {
+      const ratingsBatch = db.batch();
+      ratingsSnapshot.docs.forEach((doc) => {
+        ratingsBatch.delete(doc.ref);
+      });
+      await ratingsBatch.commit();
+      console.log(`✓ Deleted ${ratingsSnapshot.size} ratings`);
+    }
 
     // Delete pending ratings
     const pendingRatingsSnapshot = await db
@@ -953,21 +1057,384 @@ app.delete("/api/users/:userId", verifyToken, async (req, res) => {
       .where("fromUserId", "==", userId)
       .get();
 
-    const pendingBatch = db.batch();
-    pendingRatingsSnapshot.docs.forEach((doc) => {
-      pendingBatch.delete(doc.ref);
-    });
-    await pendingBatch.commit();
+    if (pendingRatingsSnapshot.size > 0) {
+      const pendingBatch = db.batch();
+      pendingRatingsSnapshot.docs.forEach((doc) => {
+        pendingBatch.delete(doc.ref);
+      });
+      await pendingBatch.commit();
+      console.log(`✓ Deleted ${pendingRatingsSnapshot.size} pending ratings`);
+    }
+
+    console.log(`✅ User ${userId} deleted successfully`);
 
     res.json({
       success: true,
       message: "User deleted successfully",
       userId: userId,
+      cloudinaryDeletion: cloudinaryResults
+        ? {
+            success: true,
+            totalImagesDeleted: cloudinaryResults.total,
+            breakdown: {
+              profilePictures: cloudinaryResults.profilePictures,
+              documents: cloudinaryResults.documents,
+              tempFiles: cloudinaryResults.tempFiles,
+            },
+          }
+        : {
+            success: false,
+            message: "Cloudinary cleanup encountered errors",
+          },
     });
   } catch (error) {
     console.error("Error deleting user:", error);
     res.status(500).json({
       error: "Failed to delete user",
+      details: error.message,
+    });
+  }
+});
+
+// ============================================
+// 1. Request Account Deletion (User endpoint)
+// ============================================
+app.post(
+  "/api/account/request-deletion",
+  authenticateToken,
+  async (req, res) => {
+    const { password } = req.body;
+    const userId = req.user.uid;
+
+    try {
+      // Verify password by attempting to re-authenticate
+      // This is handled on the client side, so we just need to verify user exists
+      const userDoc = await db.collection("users").doc(userId).get();
+
+      if (!userDoc.exists) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const userData = userDoc.data();
+
+      // Prevent admins from deleting their account this way
+      if (userData.userType === "ADMIN") {
+        return res.status(403).json({
+          error: "Admin accounts cannot be deleted through this method",
+        });
+      }
+
+      // Calculate deletion date (30 days from now)
+      const deletionScheduledAt = Date.now();
+      const deletionExecutionDate =
+        deletionScheduledAt + 30 * 24 * 60 * 60 * 1000; // 30 days
+
+      // Update user document with deletion schedule
+      await db.collection("users").doc(userId).update({
+        isDeletionScheduled: true,
+        deletionScheduledAt: deletionScheduledAt,
+        deletionExecutionDate: deletionExecutionDate,
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      console.log(
+        `User ${userId} scheduled for deletion on ${new Date(
+          deletionExecutionDate
+        ).toISOString()}`
+      );
+
+      res.json({
+        success: true,
+        message: "Account deletion scheduled successfully",
+        deletionDate: deletionExecutionDate,
+      });
+    } catch (error) {
+      console.error("Error scheduling account deletion:", error);
+      res.status(500).json({
+        error: "Failed to schedule account deletion",
+        details: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// 2. Cancel Account Deletion (User endpoint)
+// ============================================
+app.post(
+  "/api/account/cancel-deletion",
+  authenticateToken,
+  async (req, res) => {
+    const userId = req.user.uid;
+
+    try {
+      const userDoc = await db.collection("users").doc(userId).get();
+
+      if (!userDoc.exists) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const userData = userDoc.data();
+
+      if (!userData.isDeletionScheduled) {
+        return res.status(400).json({
+          error: "No deletion scheduled for this account",
+        });
+      }
+
+      // Remove deletion schedule
+      await db.collection("users").doc(userId).update({
+        isDeletionScheduled: false,
+        deletionScheduledAt: admin.firestore.FieldValue.delete(),
+        deletionExecutionDate: admin.firestore.FieldValue.delete(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      console.log(`User ${userId} cancelled account deletion`);
+
+      res.json({
+        success: true,
+        message: "Account deletion cancelled successfully",
+      });
+    } catch (error) {
+      console.error("Error cancelling account deletion:", error);
+      res.status(500).json({
+        error: "Failed to cancel account deletion",
+        details: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// 3. Check Deletion Status on Login
+// ============================================
+app.post(
+  "/api/account/check-deletion-status",
+  authenticateToken,
+  async (req, res) => {
+    const userId = req.user.uid;
+
+    try {
+      const userDoc = await db.collection("users").doc(userId).get();
+
+      if (!userDoc.exists) {
+        return res.status(404).json({ error: "User not found" });
+      }
+
+      const userData = userDoc.data();
+
+      if (userData.isDeletionScheduled) {
+        // Automatically cancel deletion on login
+        await db.collection("users").doc(userId).update({
+          isDeletionScheduled: false,
+          deletionScheduledAt: admin.firestore.FieldValue.delete(),
+          deletionExecutionDate: admin.firestore.FieldValue.delete(),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+
+        console.log(
+          `User ${userId} logged in - deletion cancelled automatically`
+        );
+
+        res.json({
+          success: true,
+          wasDeletionScheduled: true,
+          message: "Account deletion cancelled due to login",
+        });
+      } else {
+        res.json({
+          success: true,
+          wasDeletionScheduled: false,
+          message: "No deletion scheduled",
+        });
+      }
+    } catch (error) {
+      console.error("Error checking deletion status:", error);
+      res.status(500).json({
+        error: "Failed to check deletion status",
+        details: error.message,
+      });
+    }
+  }
+);
+
+// ============================================
+// 4. Cron Job - Execute Scheduled Deletions
+// ============================================
+
+// Run this job daily at 2 AM to check for accounts ready to be deleted
+cron.schedule(
+  "0 2 * * *",
+  async () => {
+    console.log("Running scheduled account deletion job...");
+
+    try {
+      const now = Date.now();
+
+      // Find all users scheduled for deletion whose time has come
+      const usersToDelete = await db
+        .collection("users")
+        .where("isDeletionScheduled", "==", true)
+        .where("deletionExecutionDate", "<=", now)
+        .get();
+
+      console.log(`Found ${usersToDelete.size} accounts ready for deletion`);
+
+      for (const userDoc of usersToDelete.docs) {
+        const userId = userDoc.id;
+        const userData = userDoc.data();
+
+        try {
+          console.log(
+            `Deleting user: ${userId} (${
+              userData.email || userData.phoneNumber
+            })`
+          );
+
+          // 1. Delete all Cloudinary images
+          let cloudinaryResults = null;
+          try {
+            cloudinaryResults = await deleteUserCloudinaryImages(userId);
+            console.log(
+              `✓ Deleted ${cloudinaryResults.total} images from Cloudinary`
+            );
+          } catch (cloudinaryError) {
+            console.error("Cloudinary deletion failed:", cloudinaryError);
+          }
+
+          // 2. Delete from Firebase Authentication
+          try {
+            await auth.deleteUser(userId);
+            console.log(`✓ Deleted user ${userId} from Authentication`);
+          } catch (authError) {
+            if (authError.code !== "auth/user-not-found") {
+              throw authError;
+            }
+          }
+
+          // 3. Delete from Firestore
+          const batch = db.batch();
+          batch.delete(db.collection("users").doc(userId));
+          batch.delete(db.collection("drivers").doc(userId));
+          batch.delete(db.collection("user_rating_stats").doc(userId));
+          await batch.commit();
+
+          // 4. Delete related collections
+          const ratingsSnapshot = await db
+            .collection("ratings")
+            .where("fromUserId", "==", userId)
+            .get();
+
+          if (ratingsSnapshot.size > 0) {
+            const ratingsBatch = db.batch();
+            ratingsSnapshot.docs.forEach((doc) => ratingsBatch.delete(doc.ref));
+            await ratingsBatch.commit();
+          }
+
+          const pendingRatingsSnapshot = await db
+            .collection("pending_ratings")
+            .where("fromUserId", "==", userId)
+            .get();
+
+          if (pendingRatingsSnapshot.size > 0) {
+            const pendingBatch = db.batch();
+            pendingRatingsSnapshot.docs.forEach((doc) =>
+              pendingBatch.delete(doc.ref)
+            );
+            await pendingBatch.commit();
+          }
+
+          console.log(`✅ Successfully deleted user ${userId}`);
+
+          // Send notification email to admin
+          await sendAlertEmail(
+            `Account Deleted: ${userId}`,
+            `User account has been automatically deleted after 30-day grace period.
+          
+User ID: ${userId}
+Email: ${userData.email || "N/A"}
+Phone: ${userData.phoneNumber || "N/A"}
+Name: ${userData.displayName || "N/A"}
+Deletion Requested: ${new Date(userData.deletionScheduledAt).toISOString()}
+Deletion Executed: ${new Date().toISOString()}
+
+Images Deleted: ${cloudinaryResults?.total || 0}
+- Profile Pictures: ${cloudinaryResults?.profilePictures || 0}
+- Documents: ${cloudinaryResults?.documents || 0}
+- Temp Files: ${cloudinaryResults?.tempFiles || 0}`
+          );
+        } catch (userDeleteError) {
+          console.error(`Failed to delete user ${userId}:`, userDeleteError);
+
+          // Send error notification
+          await sendAlertEmail(
+            `ERROR: Failed to Delete Account ${userId}`,
+            `Failed to delete user account after 30-day grace period.
+          
+User ID: ${userId}
+Error: ${userDeleteError.message}
+Stack: ${userDeleteError.stack}
+
+Manual intervention may be required.`
+          );
+        }
+      }
+
+      console.log("Scheduled account deletion job completed");
+    } catch (error) {
+      console.error("Error in scheduled deletion job:", error);
+      await sendAlertEmail(
+        "ERROR: Account Deletion Job Failed",
+        `The scheduled account deletion job encountered an error:
+      
+Error: ${error.message}
+Stack: ${error.stack}
+
+Timestamp: ${new Date().toISOString()}`
+      );
+    }
+  },
+  {
+    timezone: "Asia/Manila",
+  }
+);
+
+// ============================================
+// 5. Admin endpoint to view scheduled deletions
+// ============================================
+app.get("/api/admin/scheduled-deletions", verifyToken, async (req, res) => {
+  try {
+    const scheduledUsers = await db
+      .collection("users")
+      .where("isDeletionScheduled", "==", true)
+      .get();
+
+    const users = scheduledUsers.docs.map((doc) => {
+      const data = doc.data();
+      return {
+        uid: doc.id,
+        displayName: data.displayName,
+        email: data.email,
+        phoneNumber: data.phoneNumber,
+        userType: data.userType,
+        deletionScheduledAt: data.deletionScheduledAt,
+        deletionExecutionDate: data.deletionExecutionDate,
+        daysRemaining: Math.ceil(
+          (data.deletionExecutionDate - Date.now()) / (1000 * 60 * 60 * 24)
+        ),
+      };
+    });
+
+    res.json({
+      success: true,
+      count: users.length,
+      scheduledDeletions: users,
+    });
+  } catch (error) {
+    console.error("Error fetching scheduled deletions:", error);
+    res.status(500).json({
+      error: "Failed to fetch scheduled deletions",
       details: error.message,
     });
   }
