@@ -435,7 +435,7 @@ Continue monitoring at: ${
 // Initialize usage tracking on server start
 loadMapboxUsage();
 
-// ===== API ENDPOINTS =====
+// ===== MAPBOX API ENDPOINTS =====
 
 // Get current Mapbox usage stats
 app.get("/api/mapbox/usage", async (req, res) => {
@@ -492,6 +492,7 @@ app.post("/api/mapbox/directions", async (req, res) => {
   try {
     // Check usage limit
     if (!checkMapboxUsageLimit("directions")) {
+      console.log("Monthly API limit exceeded (95%), returning fallback");
       return res.status(429).json({
         error: "Monthly Mapbox API limit exceeded (95%)",
         fallback: true,
@@ -502,11 +503,13 @@ app.post("/api/mapbox/directions", async (req, res) => {
     const { coordinates } = req.body;
 
     if (!coordinates) {
+      console.error("No coordinates provided in request");
       return res.status(400).json({ error: "Coordinates required" });
     }
 
     const mapboxToken = process.env.MAPBOX_ACCESS_TOKEN;
     if (!mapboxToken) {
+      console.error("MAPBOX_ACCESS_TOKEN not configured");
       return res.status(500).json({ error: "Mapbox token not configured" });
     }
 
@@ -515,12 +518,35 @@ app.post("/api/mapbox/directions", async (req, res) => {
     const response = await fetch(url);
     const data = await response.json();
 
+    console.log(`Mapbox API response: ${response.status}`);
+    console.log(`Response has routes: ${data.routes ? data.routes.length : 0}`);
+
     if (response.ok) {
       // Track successful API call
       await trackMapboxCall("directions");
-    }
+      console.log("Mapbox Directions API call successful");
 
-    res.json(data);
+      // Verify we have valid route data before sending
+      if (data.routes && data.routes.length > 0) {
+        const route = data.routes[0];
+        console.log(
+          `Returning route with ${
+            route.legs ? route.legs.length : 0
+          } legs, distance: ${route.distance}m`
+        );
+      } else {
+        console.warn("Mapbox returned success but no routes!");
+      }
+
+      res.json(data);
+    } else {
+      console.error(`Mapbox API error: ${response.status}`, data);
+      res.status(response.status).json({
+        error: "Mapbox API error",
+        fallback: true,
+        details: data,
+      });
+    }
   } catch (error) {
     console.error("Mapbox Directions API error:", error);
     res.status(500).json({
@@ -636,7 +662,7 @@ cron.schedule(
   { timezone: "Asia/Manila" }
 );
 
-// =============================
+// =============OTHER API ENDPOINTS================
 
 // Middleware to verify Firebase ID token (for regular authenticated users)
 async function authenticateToken(req, res, next) {
