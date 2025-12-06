@@ -1809,7 +1809,7 @@ app.delete("/api/delete-image", authenticateToken, async (req, res) => {
 
 // Cron job to check and update expired documents - runs daily at 3 AM
 cron.schedule(
-  "0 0 * * *",
+  "12 0 * * *",
   async () => {
     console.log("Running expired documents check...");
 
