@@ -886,9 +886,12 @@ app.put("/api/users/:userId/password", verifyToken, async (req, res) => {
 });
 
 // Helper function to delete all Cloudinary images for a user
-async function deleteUserCloudinaryImages(userId) {
+async function deleteUserCloudinaryImages(userId, tempUserId = null) {
   try {
-    console.log(`Starting Cloudinary cleanup for user: ${userId}`);
+    const folderIdentifier = tempUserId || userId;
+    console.log(
+      `Starting Cloudinary cleanup for user: ${userId} (folder: ${folderIdentifier})`
+    );
 
     const deletionResults = {
       profilePictures: 0,
@@ -900,9 +903,9 @@ async function deleteUserCloudinaryImages(userId) {
     // Define all possible folders where user images might be stored
     const folders = [
       `profile_pictures/${userId}`,
-      `driver_documents/${userId}`,
-      `passenger_documents/${userId}`,
-      `registration_temp/${userId}`,
+      `driver_documents/${userId}`, //i think not used (to be checked)
+      `passenger_documents/${userId}`, //folder used only in older version
+      `registration_temp/${folderIdentifier}`,
     ];
 
     // Delete from each folder
@@ -948,31 +951,39 @@ async function deleteUserCloudinaryImages(userId) {
 
     // ADDITIONAL: Search and delete by tags (catches orphaned registration images)
     try {
-      console.log(`Searching for images tagged with user ID: ${userId}`);
-      const taggedResult = await cloudinary.api.resources_by_tag(userId, {
-        max_results: 500,
-        resource_type: "image",
-      });
+      //search for both userId and email/tempUserId
+      const searchIdentifiers = [userId];
+      if (tempUserId && tempUserId !== userId) {
+        searchIdentifiers.push(tempUserId);
+      }
 
-      if (taggedResult.resources.length > 0) {
-        console.log(
-          `Found ${taggedResult.resources.length} additional images by tag`
-        );
+      for (const identifier of searchIdentifiers) {
+        console.log(`Searching for images tagged with user ID: ${userId}`);
+        const taggedResult = await cloudinary.api.resources_by_tag(identifier, {
+          max_results: 500,
+          resource_type: "image",
+        });
 
-        const deleteTaggedPromises = taggedResult.resources.map((resource) =>
-          cloudinary.uploader.destroy(resource.public_id, {
-            resource_type: "image",
-            invalidate: true,
-          })
-        );
+        if (taggedResult.resources.length > 0) {
+          console.log(
+            `Found ${taggedResult.resources.length} additional images by tag ${identifier}`
+          );
 
-        await Promise.all(deleteTaggedPromises);
+          const deleteTaggedPromises = taggedResult.resources.map((resource) =>
+            cloudinary.uploader.destroy(resource.public_id, {
+              resource_type: "image",
+              invalidate: true,
+            })
+          );
 
-        deletionResults.tempFiles += taggedResult.resources.length;
-        deletionResults.total += taggedResult.resources.length;
-        console.log(
-          `✓ Deleted ${taggedResult.resources.length} images found by tag`
-        );
+          await Promise.all(deleteTaggedPromises);
+
+          deletionResults.tempFiles += taggedResult.resources.length;
+          deletionResults.total += taggedResult.resources.length;
+          console.log(
+            `✓ Deleted ${taggedResult.resources.length} images found by tag ${identifier}`
+          );
+        }
       }
     } catch (tagError) {
       console.error("Error deleting by tag:", tagError);
@@ -1023,7 +1034,8 @@ app.delete("/api/users/:userId", verifyToken, async (req, res) => {
     // Delete all Cloudinary images for this user
     let cloudinaryResults = null;
     try {
-      cloudinaryResults = await deleteUserCloudinaryImages(userId);
+      const tempUserId = userDoc.data().email || userId;
+      cloudinaryResults = await deleteUserCloudinaryImages(userId, tempUserId);
       console.log(
         `✓ Deleted ${cloudinaryResults.total} images from Cloudinary`
       );
@@ -1323,7 +1335,11 @@ cron.schedule(
           // 1. Delete all Cloudinary images
           let cloudinaryResults = null;
           try {
-            cloudinaryResults = await deleteUserCloudinaryImages(userId);
+            const tempUserId = userData.email || userId;
+            cloudinaryResults = await deleteUserCloudinaryImages(
+              userId,
+              tempUserId
+            );
             console.log(
               `✓ Deleted ${cloudinaryResults.total} images from Cloudinary`
             );
